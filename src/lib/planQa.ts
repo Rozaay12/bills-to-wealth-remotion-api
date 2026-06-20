@@ -1,0 +1,129 @@
+import { chartTypes, type ChartType } from './chartTypes.js';
+
+export type VisualPlanScene = {
+  sceneId?: string;
+  sceneIndex?: number;
+  visualType?: 'chart' | 'broll' | 'image' | 'text';
+  chartType?: ChartType | string;
+  assetUrl?: string;
+  providerId?: string;
+  query?: string;
+  fingerprint?: string;
+};
+
+export type PlanViolation = {
+  level: 'error' | 'warning';
+  code: string;
+  sceneIndex?: number;
+  message: string;
+};
+
+const normalize = (value = '') =>
+  value
+    .toLowerCase()
+    .replace(/https?:\/\/[^/]+/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((part) => part.length > 2)
+    .slice(0, 8)
+    .join(' ');
+
+export function fingerprintScene(scene: VisualPlanScene): string {
+  if (scene.fingerprint) return normalize(scene.fingerprint);
+  if (scene.providerId) return normalize(`${scene.visualType || ''}:${scene.providerId}`);
+  if (scene.assetUrl) return normalize(scene.assetUrl);
+  if (scene.chartType) return normalize(`chart:${scene.chartType}:${scene.query || ''}`);
+  return normalize(`${scene.visualType || 'visual'}:${scene.query || scene.sceneId || ''}`);
+}
+
+export function validateVisualPlan(scenes: VisualPlanScene[]) {
+  const violations: PlanViolation[] = [];
+  const fingerprints = new Map<string, number[]>();
+  const chartCounts = new Map<string, number>();
+  const queryCounts = new Map<string, number>();
+  let previousChartType = '';
+  let chartTotal = 0;
+
+  scenes.forEach((scene, index) => {
+    const sceneIndex = scene.sceneIndex ?? index + 1;
+    const fingerprint = fingerprintScene(scene);
+    if (fingerprint) {
+      const list = fingerprints.get(fingerprint) || [];
+      list.push(sceneIndex);
+      fingerprints.set(fingerprint, list);
+    }
+
+    const query = normalize(scene.query || '');
+    if (query) queryCounts.set(query, (queryCounts.get(query) || 0) + 1);
+
+    if (scene.visualType === 'chart' || scene.chartType) {
+      const chartType = String(scene.chartType || '').trim();
+      chartTotal += 1;
+      if (!chartTypes.includes(chartType as ChartType)) {
+        violations.push({
+          level: 'error',
+          code: 'UNKNOWN_CHART_TYPE',
+          sceneIndex,
+          message: `Unknown chart type "${chartType}".`,
+        });
+      }
+      chartCounts.set(chartType, (chartCounts.get(chartType) || 0) + 1);
+      if (previousChartType && previousChartType === chartType) {
+        violations.push({
+          level: 'error',
+          code: 'BACK_TO_BACK_CHART_TYPE',
+          sceneIndex,
+          message: `Chart type "${chartType}" repeats back-to-back.`,
+        });
+      }
+      previousChartType = chartType;
+    } else {
+      previousChartType = '';
+    }
+  });
+
+  for (const [fingerprint, sceneIndexes] of fingerprints.entries()) {
+    if (sceneIndexes.length > 1) {
+      violations.push({
+        level: 'error',
+        code: 'DUPLICATE_VISUAL_FINGERPRINT',
+        sceneIndex: sceneIndexes[1],
+        message: `Visual fingerprint "${fingerprint}" repeats in scenes ${sceneIndexes.join(', ')}.`,
+      });
+    }
+  }
+
+  const maxChartRepeats = Math.max(2, Math.ceil(chartTotal * 0.3));
+  for (const [chartType, count] of chartCounts.entries()) {
+    if (chartTotal >= 5 && count > maxChartRepeats) {
+      violations.push({
+        level: 'error',
+        code: 'CHART_TYPE_OVERUSED',
+        message: `Chart type "${chartType}" appears ${count} times; limit is ${maxChartRepeats}.`,
+      });
+    }
+  }
+
+  for (const [query, count] of queryCounts.entries()) {
+    if (count > 2) {
+      violations.push({
+        level: 'warning',
+        code: 'QUERY_OVERUSED',
+        message: `Visual query "${query}" appears ${count} times. Use more specific scene queries.`,
+      });
+    }
+  }
+
+  const errors = violations.filter((item) => item.level === 'error').length;
+  const warnings = violations.filter((item) => item.level === 'warning').length;
+  const score = Math.max(0, 100 - errors * 25 - warnings * 7);
+
+  return {
+    ok: errors === 0,
+    score,
+    errors,
+    warnings,
+    violations,
+  };
+}

@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: bills-to-wealth-remotion-api
+    runtime: node
+    plan: standard
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: API_TOKEN
+        sync: false
+      - key: RENDER_STORAGE_DIR
+        value: /tmp/bills-to-wealth-renders

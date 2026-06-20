@@ -1,0 +1,15 @@
+{
+  "chartType": "debt_waterfall",
+  "title": "The Real Cost Of A $450 Payment",
+  "subtitle": "One monthly number hides the rest of the trap.",
+  "values": [
+    { "label": "Car payment", "amount": 450 },
+    { "label": "Insurance", "amount": 180 },
+    { "label": "Gas", "amount": 220 },
+    { "label": "Maintenance", "amount": 95 },
+    { "label": "Fees", "amount": 60 }
+  ],
+  "duration": 5,
+  "voiceoverBeat": "That payment is only the first number.",
+  "emphasis": "Real cost"
+}

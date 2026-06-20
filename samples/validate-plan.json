@@ -1,0 +1,22 @@
+{
+  "scenes": [
+    {
+      "sceneIndex": 1,
+      "visualType": "chart",
+      "chartType": "debt_waterfall",
+      "query": "car loan real cost"
+    },
+    {
+      "sceneIndex": 2,
+      "visualType": "broll",
+      "assetUrl": "https://example.com/clip-a.mp4",
+      "query": "dealership paperwork"
+    },
+    {
+      "sceneIndex": 3,
+      "visualType": "chart",
+      "chartType": "payment_stack",
+      "query": "monthly auto payment insurance gas"
+    }
+  ]
+}
