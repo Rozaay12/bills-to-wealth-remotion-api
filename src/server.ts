@@ -384,7 +384,7 @@ app.post('/qa-render', requireAuth, async (req, res) => {
       '-i',
       tmpPath,
       '-vf',
-      'blackdetect=d=0.4:pix_th=0.10',
+      'blackdetect=d=0.25:pix_th=0.10',
       '-an',
       '-f',
       'null',
@@ -419,7 +419,7 @@ app.post('/qa-render', requireAuth, async (req, res) => {
 
     for (const range of blackRanges) {
       const isTail = Number.isFinite(duration) && duration - range.end < 0.7;
-      if (isTail && range.duration > 1) {
+      if (isTail && range.duration > 0.5) {
         violations.push({ level: 'error', code: 'BLACK_TAIL', message: `Black tail lasts ${range.duration.toFixed(2)}s.`, range });
       } else if (range.duration > 0.75) {
         violations.push({ level: 'error', code: 'BLACK_GAP', message: `Black screen gap lasts ${range.duration.toFixed(2)}s.`, range });

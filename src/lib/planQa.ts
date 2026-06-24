@@ -38,6 +38,9 @@ const hasInternalVisibleLabel = (value = '') => {
   if (/\b(?:budget_pressure|generic_debt|generic_savings|generic_credit|generic_budget|visual_intent|broll_query|chart_payload)\b/.test(normalized)) {
     return true;
   }
+  if (/\b(?:budgeting and monthly bills|car repair and transportation costs|healthcare and medical bills|stress and financial worry|banking and savings|income and paycheck|grocery inflation)\b/.test(normalized)) {
+    return true;
+  }
   if (/\b[a-z]+_[a-z0-9_]+\b/.test(value)) return true;
   if (/\s+#\d+\b/.test(value)) return true;
   return false;
@@ -88,7 +91,7 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
       textFallbackStreak += 1;
       if (textFallbackStreak > 2) {
         violations.push({
-          level: 'warning',
+          level: 'error',
           code: 'TEXT_FALLBACK_STREAK',
           sceneIndex,
           message: 'More than two fallback text cards appear back-to-back. Use b-roll or a finance graphic.',
@@ -146,10 +149,10 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
     }
   }
 
-  const maxTextFallbacks = Math.max(10, Math.ceil(scenes.length * 0.55));
+  const maxTextFallbacks = Math.max(2, Math.ceil(scenes.length * 0.35));
   if (textFallbackTotal > maxTextFallbacks) {
     violations.push({
-      level: 'warning',
+      level: 'error',
       code: 'TEXT_FALLBACK_OVERUSED',
       message: `Fallback text cards appear ${textFallbackTotal} times; limit is ${maxTextFallbacks}. Use matched b-roll or Remotion graphics.`,
     });

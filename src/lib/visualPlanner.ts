@@ -119,6 +119,7 @@ const MIN_RESCUE_BROLL_SCORE = 9;
 const DEFAULT_TARGET_CHARTS = 5;
 const ABSOLUTE_MAX_AUTOMATED_CHARTS = 8;
 const DEFAULT_INTENT_PROFILE_INDEX = 4; // budgeting/monthly bills is safer than car/dealership for unknown beats.
+const KNOWN_LIBRARY_CATEGORY = /^\d{2}_[a-z0-9_]+$/;
 
 const backendLabelReplacements: Record<string, string> = {
   budget_pressure: 'monthly budget pressure',
@@ -223,8 +224,9 @@ const intentProfiles: IntentProfile[] = [
   {
     label: 'healthcare and medical bills',
     categories: ['09_healthcare_bills', '15_medical_copay', '04_budgeting'],
-    keywords: ['medical', 'doctor', 'hospital', 'copay', 'healthcare', 'insurance', 'pharmacy'],
-    desiredTerms: ['medical bill', 'doctor', 'pharmacy', 'hospital', 'insurance', 'copay'],
+    keywords: ['medical', 'doctor', 'hospital', 'copay', 'healthcare', 'insurance', 'pharmacy', 'er', 'emergency', 'chargemaster', 'itemized', 'trauma activation', 'eob', 'uninsured', 'underinsured'],
+    desiredTerms: ['medical bill', 'hospital bill', 'doctor', 'pharmacy', 'hospital', 'insurance', 'copay', 'EOB', 'itemized bill', 'paperwork', 'documents', 'phone call', 'kitchen table'],
+    forbiddenTerms: ['repair', 'mechanic', 'tire', 'wheel', 'hood', 'jack', 'oil', 'garage', 'tools', 'grocery', 'supermarket', 'cereal', 'cart'],
     chartTypes: ['statement_breakdown', 'fee_explosion'],
   },
   {
@@ -398,6 +400,101 @@ function countMatches(text: string, terms: string[]) {
   }, 0);
 }
 
+function matchAny(text: string, terms: string[]) {
+  return countMatches(text, terms) > 0;
+}
+
+type VisualRequirementGroups = {
+  action: string[];
+  object: string[];
+  location: string[];
+  strict: boolean;
+  reason: string;
+};
+
+function visualRequirementGroups(sceneText: string, intent: SceneIntent): VisualRequirementGroups {
+  const text = normalizeText(sceneText);
+  const base: VisualRequirementGroups = {
+    action: [],
+    object: [],
+    location: [],
+    strict: true,
+    reason: intent.label,
+  };
+
+  if (/\b(sign|signed|signing|paperwork|contract|documents?|loan officer|finance manager|dealership)\b/i.test(sceneText)) {
+    return {
+      action: ['sign', 'signing', 'write', 'review', 'hand', 'slide', 'fill out'],
+      object: ['paperwork', 'contract', 'document', 'documents', 'forms', 'signature', 'pen', 'loan', 'financing'],
+      location: ['desk', 'office', 'dealership', 'table'],
+      strict: true,
+      reason: 'paperwork/signing beat requires paperwork visuals',
+    };
+  }
+
+  if (isCarBeat(sceneText)) {
+    return {
+      action: ['drive', 'repair', 'pay', 'sign', 'review'],
+      object: ['car', 'vehicle', 'loan', 'payment', 'insurance', 'gas', 'mechanic'],
+      location: ['dealership', 'garage', 'repair shop', 'gas station', 'desk'],
+      strict: /\b(sign|signed|signing|paperwork|contract|loan|dealership)\b/i.test(sceneText),
+      reason: 'car beat requires car/dealership/payment visuals',
+    };
+  }
+
+  if (/\b(er|emergency room|hospital|medical|doctor|copay|healthcare|eob|bill|chargemaster|trauma activation|itemized)\b/i.test(sceneText)) {
+    return {
+      action: ['open', 'read', 'review', 'compare', 'call', 'negotiate', 'pay'],
+      object: ['medical bill', 'hospital bill', 'invoice', 'statement', 'insurance', 'eob', 'documents', 'paperwork', 'phone'],
+      location: ['hospital', 'doctor', 'clinic', 'pharmacy', 'desk', 'kitchen table', 'home'],
+      strict: true,
+      reason: 'medical billing beat requires medical/document visuals',
+    };
+  }
+
+  if (isGroceryBeat(sceneText)) {
+    return {
+      action: ['shop', 'checkout', 'scan', 'compare', 'pay', 'read'],
+      object: ['receipt', 'cart', 'price tag', 'shelf tag', 'unit price', 'groceries', 'food', 'cereal', 'package'],
+      location: ['grocery', 'supermarket', 'store', 'checkout', 'aisle', 'shelf'],
+      strict: true,
+      reason: 'grocery beat requires store/receipt/price visuals',
+    };
+  }
+
+  if (/\b(overdraft|debit|declined|pending|bank app|balance|checking|savings|deposit)\b/i.test(sceneText)) {
+    return {
+      action: ['check', 'tap', 'decline', 'pay', 'transfer', 'deposit'],
+      object: ['debit card', 'bank app', 'phone', 'balance', 'statement', 'alert', 'card'],
+      location: ['checkout', 'store', 'gas pump', 'desk', 'home'],
+      strict: true,
+      reason: 'banking beat requires card/app/balance visuals',
+    };
+  }
+
+  return {
+    ...base,
+    action: intent.highSignalTokens.slice(0, 3),
+    object: intent.desiredTerms.slice(0, 5),
+    location: intent.categories.map((category) => category.replace(/^\d+_/, '').replace(/_/g, ' ')),
+    strict: false,
+  };
+}
+
+function matchedRequirementGroupCount(clipTextValue: string, groups: VisualRequirementGroups) {
+  const normalized = normalizeText(clipTextValue);
+  return [
+    matchAny(normalized, groups.action),
+    matchAny(normalized, groups.object),
+    matchAny(normalized, groups.location),
+  ].filter(Boolean).length;
+}
+
+function forbiddenCategoryPenalty(category: string, intent: SceneIntent) {
+  if (!KNOWN_LIBRARY_CATEGORY.test(category)) return 0;
+  return intent.categories.includes(category) ? 0 : 24;
+}
+
 function clipText(clip: BrollClip) {
   return [
     clipCategory(clip),
@@ -469,7 +566,7 @@ function isGenericScreenClip(clip: BrollClip) {
   return /\b(laptop|computer|screen|monitor|keyboard|typing|website|scrolling)\b/i.test(clipText(clip));
 }
 
-function scoreClip(clip: BrollClip, intent: SceneIntent, usedFingerprints: Set<string>) {
+function scoreClip(clip: BrollClip, intent: SceneIntent, usedFingerprints: Set<string>, sceneText = '') {
   const text = clipText(clip);
   const normalized = normalizeText(text);
   const identity = clipIdentity(clip);
@@ -482,11 +579,28 @@ function scoreClip(clip: BrollClip, intent: SceneIntent, usedFingerprints: Set<s
   let score = 0;
   const warnings: string[] = [];
   const quality = qualityFor(clip);
+  const requirementGroups = visualRequirementGroups(sceneText, intent);
+  const matchedGroups = matchedRequirementGroupCount(text, requirementGroups);
+  const categoryPenalty = forbiddenCategoryPenalty(category, intent);
+
   score += quality;
 
   if (intent.categories.includes(String(category))) score += 12;
+  if (categoryPenalty) {
+    score -= categoryPenalty;
+    warnings.push('wrong_story_category');
+  }
   score += countMatches(normalized, intent.desiredTerms) * 4;
   score += countMatches(normalized, intent.highSignalTokens) * 2;
+  score += matchedGroups * 7;
+
+  if (requirementGroups.strict && matchedGroups < 2) {
+    score -= 28;
+    warnings.push(`failed_action_object_location_gate:${requirementGroups.reason}`);
+  } else if (!requirementGroups.strict && matchedGroups === 0) {
+    score -= 10;
+    warnings.push('weak_editorial_match');
+  }
 
   const forbiddenHits = countMatches(normalized, intent.forbiddenTerms);
   if (forbiddenHits) {
@@ -514,6 +628,10 @@ function scoreClip(clip: BrollClip, intent: SceneIntent, usedFingerprints: Set<s
     score -= 18;
     warnings.push('paperwork_scene_rejects_repair_visual');
   }
+  if (!isCarBeat(sceneText) && /\b(er|hospital|medical|chargemaster|itemized|insurance|eob)\b/i.test(sceneText) && /\b(grocery|supermarket|checkout|cart|cereal|produce|mechanic|repair|tire|wheel|garage)\b/i.test(text)) {
+    score -= 24;
+    warnings.push('medical_scene_rejects_unrelated_visual');
+  }
 
   return { score, warnings };
 }
@@ -523,10 +641,11 @@ function selectBrollClip(
   intent: SceneIntent,
   usedFingerprints: Set<string>,
   minScore: number,
+  sceneText = '',
 ) {
   const ranked = clips
     .map((clip) => {
-      const result = scoreClip(clip, intent, usedFingerprints);
+      const result = scoreClip(clip, intent, usedFingerprints, sceneText);
       return { clip, score: result.score, warnings: result.warnings };
     })
     .filter((item) => item.score >= minScore)
@@ -558,6 +677,17 @@ function conciseBeat(scene: VideoPlanSceneInput) {
   const text = safeText(scene);
   const firstSentence = text.split(/(?<=[.!?])\s+/)[0] || text;
   return cleanVisibleText(firstSentence).slice(0, 140);
+}
+
+function humanVisualIntent(scene: VideoPlanSceneInput, intent: SceneIntent) {
+  const text = safeText(scene);
+  if (/\b(sign|signed|signing|paperwork|contract|documents?)\b/i.test(text)) return 'Show the paperwork, signature, and decision point.';
+  if (/\b(chargemaster|itemized|billing department|eob|hospital bill|medical bill|trauma activation)\b/i.test(text)) return 'Show the medical bill, paperwork, or billing call.';
+  if (isGroceryBeat(text)) return 'Show the receipt, price tag, or grocery checkout detail.';
+  if (/\boverdraft|declined|pending|low balance|bank app\b/i.test(text)) return 'Show the card, bank app, balance, or declined payment moment.';
+  if (isCarBeat(text)) return 'Show the car payment, dealership paperwork, or transportation cost.';
+  if (/\bsave|buffer|emergency\b/i.test(text)) return 'Show the savings buffer or relief moment.';
+  return `Show the specific money decision: ${intent.query}`.slice(0, 120);
 }
 
 function hasNumbers(text: string) {
@@ -700,7 +830,7 @@ function buildChartPayload(scene: VideoPlanSceneInput, intent: SceneIntent, char
   return {
     chartType,
     title: shortTitle(scene, chartType),
-    subtitle: titleCase(intent.label),
+    subtitle: subtitleForScene(scene, intent),
     values: chartValuesFor(scene, chartType),
     duration: Math.max(4, Math.min(7, Math.round(scene.duration || 5))),
     sceneId: scene.sceneId || `scene-${scene.sceneIndex || 0}`,
@@ -750,12 +880,12 @@ function makeTextFallback(scene: VideoPlanSceneInput, intent: SceneIntent, usedF
     narration: text,
     duration: scene.duration || 4,
     visualType: 'text' as const,
-    visualIntent: intent.label,
+    visualIntent: humanVisualIntent(scene, intent),
     brollQuery: intent.query,
     fallbackTitle,
     fallbackKicker: kickerFor(text),
     fallbackText: conciseBeat(scene),
-    suppressCaptions: false,
+    suppressCaptions: true,
     visualFingerprint: fingerprint,
     relevanceScore: 0,
     qa: {
@@ -832,19 +962,46 @@ function rebalanceFallbacksWithCharts(planned: PlannedVisualScene[], scenes: Vid
 }
 
 function kickerFor(text: string) {
+  if (/\b(er|hospital|medical|chargemaster|itemized|insurance|eob|copay|doctor|pharmacy)\b/i.test(text)) return 'Hospital Bill';
+  if (/\b(sign|signed|signing|paperwork|contract|documents?|loan officer|finance manager)\b/i.test(text)) return 'Paperwork';
+  if (isGroceryBeat(text)) return 'Receipt Check';
   if (/\boverdraft|fee|penalty|declined\b/i.test(text)) return 'Real Cost';
   if (/\bsave|buffer|emergency\b/i.test(text)) return 'Move Two';
   if (/\bwatch|pay attention|hidden|trap\b/i.test(text)) return 'Pay Attention';
   return 'Why It Matters';
 }
 
+function subtitleForScene(scene: VideoPlanSceneInput, intent: SceneIntent) {
+  const text = safeText(scene);
+  if (isCarBeat(text) && /\b(insurance|gas|maintenance|payment|fees|monthly)\b/i.test(text)) return 'The payment is only one piece.';
+  if (/\b(chargemaster|uninsured|underinsured)\b/i.test(text)) return 'The sticker price is not the final price.';
+  if (/\b(itemized|billing department|call|phone)\b/i.test(text)) return 'Use the bill against itself.';
+  if (/\b(eob|insurer)\b/i.test(text) || (/\binsurance\b/i.test(text) && /\b(hospital|medical|doctor|copay|healthcare|bill)\b/i.test(text))) return 'Compare what they billed to what insurance says.';
+  if (/\b(sign|signed|signing|paperwork|contract)\b/i.test(text)) return 'The details are in the document.';
+  if (isGroceryBeat(text)) return 'The receipt tells the truth.';
+  if (/\boverdraft|declined|pending|low balance\b/i.test(text)) return 'The fee starts before it posts.';
+  if (/\bsave|buffer|emergency\b/i.test(text)) return 'The buffer changes the outcome.';
+  if (intent.label.includes('budget')) return 'The monthly number is only the beginning.';
+  return 'Follow the money in this moment.';
+}
+
 function fallbackTitleFor(scene: VideoPlanSceneInput, intent: SceneIntent) {
   const text = safeText(scene);
+  if (isCarBeat(text) && /\b(insurance|gas|maintenance|fees|real cost|payment)\b/i.test(text)) return 'The Payment Is Not The Price';
+  if (/\b(chargemaster|uninsured|underinsured)\b/i.test(text)) return 'The Hospital Price Is Not The Final Price';
+  if (/\b(itemized|billing department|call|phone)\b/i.test(text)) return 'Call Billing Before You Pay';
+  if (/\b(eob|insurer)\b/i.test(text) || (/\binsurance\b/i.test(text) && /\b(hospital|medical|doctor|copay|healthcare|bill)\b/i.test(text))) return 'Compare The Bill To The EOB';
+  if (/\b(er|emergency room|medical bill|hospital bill|trauma activation)\b/i.test(text)) return 'The Bill Is An Opening Offer';
+  if (isGroceryBeat(text) && /\b(unit price|per ounce|ounces?|oz)\b/i.test(text)) return 'Check The Unit Price';
+  if (isGroceryBeat(text) && /\b(shrinkflation|package|smaller|less)\b/i.test(text)) return 'Shrinkflation Hides In The Package';
+  if (isGroceryBeat(text)) return 'The Receipt Shows The Real Price';
   if (/\boverdraft|declined|pending\b/i.test(text)) return 'The Fee Was Set Up Before It Hit';
   if (/\bbalance|bank app|alert\b/i.test(text)) return 'The App Is Not The Whole Story';
   if (/\bsave|buffer|emergency\b/i.test(text)) return 'Build A Buffer Before The Fee';
   if (/\bpaperwork|contract|sign\b/i.test(text)) return 'The Paperwork Hides The Real Cost';
-  return titleCase(intent.label);
+  const beat = conciseBeat(scene).replace(/[.!?]+$/, '');
+  if (beat.length >= 18 && beat.length <= 70) return beat;
+  return subtitleForScene(scene, intent).replace(/[.!?]+$/, '');
 }
 
 export function planVideoVisuals(
@@ -893,7 +1050,7 @@ export function planVideoVisuals(
         narration,
         duration: normalizedScene.duration || 5,
         visualType: 'chart',
-        visualIntent: intent.label,
+        visualIntent: humanVisualIntent(normalizedScene, intent),
         chartPayload,
         chartType,
         suppressCaptions: true,
@@ -912,8 +1069,8 @@ export function planVideoVisuals(
     const sceneClips = Array.isArray(normalizedScene.candidates) && normalizedScene.candidates.length
       ? normalizedScene.candidates
       : clips;
-    const selectedClip = selectBrollClip(sceneClips, intent, usedFingerprints, minBrollScore);
-    const rescueClip = selectedClip || selectBrollClip(sceneClips, intent, usedFingerprints, minRescueBrollScore);
+    const selectedClip = selectBrollClip(sceneClips, intent, usedFingerprints, minBrollScore, narration);
+    const rescueClip = selectedClip || selectBrollClip(sceneClips, intent, usedFingerprints, minRescueBrollScore, narration);
     if (!rescueClip) {
       planned.push(makeTextFallback(normalizedScene, intent, usedFingerprints));
       return;
@@ -927,7 +1084,7 @@ export function planVideoVisuals(
       narration,
       duration: normalizedScene.duration || 4,
       visualType: 'broll',
-      visualIntent: intent.label,
+      visualIntent: humanVisualIntent(normalizedScene, intent),
       brollQuery: intent.query,
       selectedClip: rescueClip,
       visualFingerprint,
@@ -966,7 +1123,7 @@ export function planVideoVisuals(
 
   return {
     ok: qa.ok,
-    version: 'v64_intent_broll_first_chart_guard',
+    version: 'v65_strict_visual_director_category_gate',
     summary: {
       scenes: planned.length,
       brollCount,
