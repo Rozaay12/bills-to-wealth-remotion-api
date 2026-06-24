@@ -469,7 +469,7 @@ function visualRequirementGroups(sceneText: string, intent: SceneIntent): Visual
       action: ['check', 'tap', 'decline', 'pay', 'transfer', 'deposit'],
       object: ['debit card', 'bank app', 'phone', 'balance', 'statement', 'alert', 'card'],
       location: ['checkout', 'store', 'gas pump', 'desk', 'home'],
-      strict: true,
+      strict: false,
       reason: 'banking beat requires card/app/balance visuals',
     };
   }
@@ -479,7 +479,7 @@ function visualRequirementGroups(sceneText: string, intent: SceneIntent): Visual
       action: ['shop', 'checkout', 'scan', 'compare', 'pay', 'read'],
       object: ['receipt', 'cart', 'price tag', 'shelf tag', 'unit price', 'groceries', 'food', 'cereal', 'package'],
       location: ['grocery', 'supermarket', 'store', 'checkout', 'aisle', 'shelf'],
-      strict: true,
+      strict: false,
       reason: 'grocery beat requires store/receipt/price visuals',
     };
   }
@@ -1437,9 +1437,31 @@ export function planVideoVisuals(
   const brollCount = planned.filter((scene) => scene.visualType === 'broll').length;
   const chartCount = planned.filter((scene) => scene.visualType === 'chart').length;
   const fallbackCount = planned.filter((scene) => scene.visualType === 'text').length;
+  const clipsAvailable = clips.length || sceneCandidateCount;
+  const minimumBrollCoverage = clipsAvailable > 0
+    ? Math.min(12, Math.max(6, Math.ceil((planned.length - chartCount) * 0.38)))
+    : 0;
+  const coverageViolations = brollCount < minimumBrollCoverage
+    ? [
+        {
+          level: 'error' as const,
+          code: 'BROLL_COVERAGE_LOW',
+          message: `Only ${brollCount} b-roll scenes selected; minimum is ${minimumBrollCoverage}. Loosen visual matching or add more source clips before rendering.`,
+        },
+      ]
+    : [];
+  const qaReport = coverageViolations.length
+    ? {
+        ...qa,
+        ok: false,
+        errors: qa.errors + coverageViolations.length,
+        violations: [...qa.violations, ...coverageViolations],
+        score: Math.max(0, qa.score - coverageViolations.length * 25),
+      }
+    : qa;
 
   return {
-    ok: qa.ok,
+    ok: qaReport.ok,
     version: 'v65_strict_visual_director_category_gate',
     summary: {
       scenes: planned.length,
@@ -1447,11 +1469,12 @@ export function planVideoVisuals(
       chartCount,
       fallbackCount,
       targetChartCount,
-      clipsAvailable: clips.length || sceneCandidateCount,
-      qaScore: qa.score,
+      clipsAvailable,
+      minimumBrollCoverage,
+      qaScore: qaReport.score,
     },
     scenes: planned,
-    qaReport: qa,
-    issues: qa.violations,
+    qaReport,
+    issues: qaReport.violations,
   };
 }
