@@ -239,8 +239,8 @@ const intentProfiles: IntentProfile[] = [
   {
     label: 'car repair and transportation costs',
     categories: ['14_car_repair', '19_inflation_expenses', '04_budgeting'],
-    keywords: ['car', 'vehicle', 'auto', 'mechanic', 'repair', 'maintenance', 'gas', 'insurance'],
-    desiredTerms: ['car', 'vehicle', 'mechanic', 'repair', 'gas pump', 'insurance', 'maintenance'],
+    keywords: ['car', 'vehicle', 'auto', 'mechanic', 'repair', 'maintenance', 'gas', 'dealership', 'dealer', 'auto loan'],
+    desiredTerms: ['car', 'vehicle', 'mechanic', 'repair', 'gas pump', 'maintenance', 'dealership', 'auto loan'],
     chartTypes: ['debt_waterfall', 'payment_stack'],
   },
 ];
@@ -442,7 +442,7 @@ function visualRequirementGroups(sceneText: string, intent: SceneIntent): Visual
     };
   }
 
-  if (/\b(er|emergency room|hospital|medical|doctor|copay|healthcare|eob|bill|chargemaster|trauma activation|itemized)\b/i.test(sceneText)) {
+  if (isMedicalBeat(sceneText)) {
     return {
       action: ['open', 'read', 'review', 'compare', 'call', 'negotiate', 'pay'],
       object: ['medical bill', 'hospital bill', 'invoice', 'statement', 'insurance', 'eob', 'documents', 'paperwork', 'phone'],
@@ -540,7 +540,8 @@ export function inferSceneIntent(scene: VideoPlanSceneInput): SceneIntent {
     /\b(sign|signed|signing|paperwork|contract|documents?|loan officer|finance manager|dealership)\b/i.test(text) &&
     /\b(car|auto|vehicle|dealership|loan|keys)\b/i.test(text);
 
-  const profile = isPaperwork ? intentProfiles[2] : winner;
+  const medicalProfile = intentProfiles.find((profile) => profile.label === 'healthcare and medical bills') || winner;
+  const profile = isPaperwork ? intentProfiles[2] : (isMedicalBeat(text) ? medicalProfile : winner);
   const highSignalTokens = unique(tokens.filter((token) => token.length > 3)).slice(0, 10);
   const desiredTerms = unique([...profile.desiredTerms, ...highSignalTokens.slice(0, 6)]);
   const forbiddenTerms = unique(profile.forbiddenTerms || []);
@@ -682,7 +683,7 @@ function conciseBeat(scene: VideoPlanSceneInput) {
 function humanVisualIntent(scene: VideoPlanSceneInput, intent: SceneIntent) {
   const text = safeText(scene);
   if (/\b(sign|signed|signing|paperwork|contract|documents?)\b/i.test(text)) return 'Show the paperwork, signature, and decision point.';
-  if (/\b(chargemaster|itemized|billing department|eob|hospital bill|medical bill|trauma activation)\b/i.test(text)) return 'Show the medical bill, paperwork, or billing call.';
+  if (isMedicalBeat(text)) return 'Show the medical bill, paperwork, clinic, or billing call.';
   if (isGroceryBeat(text)) return 'Show the receipt, price tag, or grocery checkout detail.';
   if (/\boverdraft|declined|pending|low balance|bank app\b/i.test(text)) return 'Show the card, bank app, balance, or declined payment moment.';
   if (isCarBeat(text)) return 'Show the car payment, dealership paperwork, or transportation cost.';
@@ -698,8 +699,15 @@ function isGroceryBeat(text: string) {
   return /\b(grocery|groceries|supermarket|checkout|receipt|shelf|unit price|per ounce|ounces?|package|shrinkflation|store brand|food price|cart|cereal|bakery|produce|store aisle)\b/i.test(text);
 }
 
+function isMedicalBeat(text: string) {
+  return /\b(er|emergency room|hospital|medical|doctor|copay|healthcare|pharmacy|chargemaster|itemized|trauma activation|eob|patient|clinic)\b/i.test(text) ||
+    (/\binsurance\b/i.test(text) && /\b(card|copay|bill|invoice|doctor|hospital|medical|healthcare|eob|patient|clinic)\b/i.test(text));
+}
+
 function isCarBeat(text: string) {
-  return /\b(car|vehicle|dealership|dealer|auto loan|mechanic|repair|insurance|gas|maintenance)\b/i.test(text);
+  if (isMedicalBeat(text)) return false;
+  return /\b(car|vehicle|dealership|dealer|auto loan|mechanic|repair|gas pump|gas station|maintenance)\b/i.test(text) ||
+    (/\binsurance\b/i.test(text) && /\b(car|vehicle|auto|driver|dealer|dealership|gas|maintenance|repair)\b/i.test(text));
 }
 
 function isChartWorthyText(text: string) {
@@ -714,27 +722,54 @@ function isChartWorthyText(text: string) {
 function chooseChartType(scene: VideoPlanSceneInput, intent: SceneIntent, previousChartType?: ChartType): ChartType {
   const text = safeText(scene);
   const preferred = [...intent.chartTypes];
+  if (isMedicalBeat(text)) preferred.unshift('statement_breakdown', 'fee_explosion');
   if (/\b(apr|interest|compound|years?|months?)\b/i.test(text)) preferred.unshift('interest_trap_timeline');
   if (/\b(statement|minimum|due date|balance)\b/i.test(text)) preferred.unshift('statement_breakdown');
   if (/\b(fee|late|overdraft|penalty|add on|addon)\b/i.test(text)) preferred.unshift('fee_explosion');
   if (/\b(before|after|instead|switch|save|savings)\b/i.test(text)) preferred.unshift('before_after_cashflow');
-  if (/\b(monthly|payment|insurance|gas|rent|budget)\b/i.test(text)) preferred.unshift('payment_stack');
+  if (!isMedicalBeat(text) && /\b(monthly|payment|insurance|gas|rent|budget)\b/i.test(text)) preferred.unshift('payment_stack');
 
   const uniquePreferred = unique(preferred.filter((type) => chartTypes.includes(type)));
   return uniquePreferred.find((type) => type !== previousChartType) || uniquePreferred[0] || 'payment_stack';
 }
 
 function extractMoneyValues(text: string) {
-  const matches = Array.from(text.matchAll(/\$?\b(\d{2,6})(?:,\d{3})?\b/g))
+  const matches = Array.from(text.matchAll(/\$?\b(\d{1,3}(?:,\d{3})+|\d{2,6})\b/g))
     .map((match) => Number(match[1].replace(/,/g, '')))
     .filter((value) => Number.isFinite(value) && value > 0)
     .slice(0, 5);
   return matches.length ? matches : [];
 }
 
+function extractDollarValues(text: string) {
+  return Array.from(text.matchAll(/\$\s*(\d{1,3}(?:,\d{3})+|\d{1,6})\b/g))
+    .map((match) => Number(match[1].replace(/,/g, '')))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .slice(0, 5);
+}
+
 function chartValuesFor(scene: VideoPlanSceneInput, chartType: ChartType) {
   const text = safeText(scene);
   const values = extractMoneyValues(text);
+  if (isMedicalBeat(text)) {
+    const dollarValues = extractDollarValues(text);
+    const percent = Number((text.match(/\b(\d+(?:\.\d+)?)\s?%/) || [])[1]);
+    const copay = dollarValues.find((value) => value <= 150) || 20;
+    const surpriseBill = dollarValues.find((value) => value >= 200) || values.find((value) => value >= 200) || 1200;
+    if (/\b(chargemaster|uninsured|underinsured|facility fee|trauma activation)\b/i.test(text) || chartType === 'fee_explosion') {
+      return [
+        { label: 'Copay', amount: copay },
+        { label: 'Facility fee', amount: Math.max(300, Math.round(surpriseBill * 0.55)) },
+        { label: 'Extra charges', amount: Math.max(150, Math.round(surpriseBill * 0.3)) },
+        { label: 'Total surprise', amount: surpriseBill },
+      ];
+    }
+    return [
+      { label: 'Copay', amount: copay },
+      { label: 'Surprise invoice', amount: surpriseBill },
+      { label: 'Skipped care', amount: Number.isFinite(percent) ? percent : 26 },
+    ];
+  }
   if (isGroceryBeat(text)) {
     if (/\b(unit price|per ounce|ounces?|oz)\b/i.test(text)) {
       return [
@@ -807,6 +842,12 @@ function chartValuesFor(scene: VideoPlanSceneInput, chartType: ChartType) {
 
 function shortTitle(scene: VideoPlanSceneInput, chartType: ChartType) {
   const text = safeText(scene);
+  if (isMedicalBeat(text)) {
+    if (/\b(chargemaster|uninsured|underinsured)\b/i.test(text)) return 'The Hospital Sticker Price Trap';
+    if (/\b(facility fee|trauma activation|extra charges)\b/i.test(text)) return 'The Hidden Facility Fee';
+    if (/\b(eob|insurance)\b/i.test(text)) return 'What Insurance Says Vs What They Billed';
+    return 'The Medical Bill Breakdown';
+  }
   if (isGroceryBeat(text)) {
     if (/\b(unit price|per ounce|ounces?|oz)\b/i.test(text)) return 'The Unit Price Trap';
     if (/\b(shrinkflation|package|smaller|less)\b/i.test(text)) return 'Shrinkflation Hides Here';
@@ -973,6 +1014,12 @@ function kickerFor(text: string) {
 
 function subtitleForScene(scene: VideoPlanSceneInput, intent: SceneIntent) {
   const text = safeText(scene);
+  if (isMedicalBeat(text)) {
+    if (/\b(chargemaster|uninsured|underinsured)\b/i.test(text)) return 'The sticker price is not the final price.';
+    if (/\b(itemized|billing department|call|phone)\b/i.test(text)) return 'Use the bill against itself.';
+    if (/\b(eob|insurance|insurer)\b/i.test(text)) return 'Compare what they billed to what insurance says.';
+    return 'The copay is not the whole bill.';
+  }
   if (isCarBeat(text) && /\b(insurance|gas|maintenance|payment|fees|monthly)\b/i.test(text)) return 'The payment is only one piece.';
   if (/\b(chargemaster|uninsured|underinsured)\b/i.test(text)) return 'The sticker price is not the final price.';
   if (/\b(itemized|billing department|call|phone)\b/i.test(text)) return 'Use the bill against itself.';
@@ -987,6 +1034,12 @@ function subtitleForScene(scene: VideoPlanSceneInput, intent: SceneIntent) {
 
 function fallbackTitleFor(scene: VideoPlanSceneInput, intent: SceneIntent) {
   const text = safeText(scene);
+  if (isMedicalBeat(text)) {
+    if (/\b(chargemaster|uninsured|underinsured)\b/i.test(text)) return 'The Hospital Price Is Not The Final Price';
+    if (/\b(itemized|billing department|call|phone)\b/i.test(text)) return 'Call Billing Before You Pay';
+    if (/\b(eob|insurance|insurer)\b/i.test(text)) return 'Compare The Bill To The EOB';
+    return 'The Bill Is An Opening Offer';
+  }
   if (isCarBeat(text) && /\b(insurance|gas|maintenance|fees|real cost|payment)\b/i.test(text)) return 'The Payment Is Not The Price';
   if (/\b(chargemaster|uninsured|underinsured)\b/i.test(text)) return 'The Hospital Price Is Not The Final Price';
   if (/\b(itemized|billing department|call|phone)\b/i.test(text)) return 'Call Billing Before You Pay';
@@ -1135,5 +1188,6 @@ export function planVideoVisuals(
     },
     scenes: planned,
     qaReport: qa,
+    issues: qa.violations,
   };
 }
