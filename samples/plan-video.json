@@ -1,0 +1,49 @@
+{
+  "options": {
+    "targetChartCount": 2,
+    "minBrollScore": 12
+  },
+  "brollLibrary": [
+    {
+      "clip_id": "PAPER-001",
+      "url": "https://drive.google.com/file/d/examplePaperwork/view?usp=drivesdk",
+      "category": "04_budgeting",
+      "tags": ["paperwork", "contract", "pen", "desk", "loan documents", "signature"],
+      "description": "Close-up of hands signing loan paperwork on a desk with a pen.",
+      "quality_score": null
+    },
+    {
+      "clip_id": "CAR-REPAIR-001",
+      "url": "https://drive.google.com/file/d/exampleRepair/view?usp=drivesdk",
+      "category": "14_car_repair",
+      "tags": ["car", "mechanic", "tire", "wheel", "jack", "repair"],
+      "description": "Mechanic lifting a car with a jack and working near the tire.",
+      "quality_score": 8.8
+    },
+    {
+      "clip_id": "STRESS-001",
+      "url": "https://drive.google.com/file/d/exampleStress/view?usp=drivesdk",
+      "category": "05_stress_worry",
+      "tags": ["financial stress", "bills", "kitchen table", "worried person"],
+      "description": "A worried person sitting at a kitchen table with bills and envelopes.",
+      "quality_score": 7.6
+    }
+  ],
+  "scenes": [
+    {
+      "sceneIndex": 1,
+      "narration": "You sign the paperwork, they hand you the keys, and the monthly payment sounds manageable.",
+      "duration": 5
+    },
+    {
+      "sceneIndex": 2,
+      "narration": "But the real cost is not just the car payment. It is insurance, gas, maintenance, and fees stacked on top.",
+      "duration": 6
+    },
+    {
+      "sceneIndex": 3,
+      "narration": "Then the bills hit your kitchen table and suddenly that deal feels different.",
+      "duration": 5
+    }
+  ]
+}

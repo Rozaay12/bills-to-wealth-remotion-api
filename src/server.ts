@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chartPayloadSchema, chartTypeDescriptions, chartTypes } from './lib/chartTypes.js';
 import { validateVisualPlan } from './lib/planQa.js';
+import { planVideoVisuals, type BrollClip } from './lib/visualPlanner.js';
 
 const app = express();
 const port = Number(process.env.PORT || 10000);
@@ -15,10 +16,11 @@ const apiToken = process.env.API_TOKEN || '';
 const remotionEntryPoint = path.join(process.cwd(), 'src/remotion/index.ts');
 
 app.set('trust proxy', true);
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '12mb' }));
 
 let bundlePromise: Promise<string> | null = null;
 let renderQueue = Promise.resolve();
+const metadataCache = new Map<string, { clips: BrollClip[]; loadedAt: number }>();
 
 async function getBundleLocation() {
   if (!bundlePromise) {
@@ -44,6 +46,44 @@ function publicBaseUrl(req: express.Request) {
   const configured = process.env.PUBLIC_BASE_URL?.replace(/\/$/, '');
   if (configured) return configured;
   return `${req.protocol}://${req.get('host')}`;
+}
+
+function driveDownloadUrl(url: string) {
+  const fileId = url.match(/\/d\/([^/]+)/)?.[1] || url.match(/[?&]id=([^&]+)/)?.[1];
+  if (!fileId) return url;
+  return `https://drive.google.com/uc?id=${encodeURIComponent(fileId)}&export=download`;
+}
+
+function clipsFromPayload(body: Record<string, unknown>): BrollClip[] {
+  if (Array.isArray(body.brollLibrary)) return body.brollLibrary as BrollClip[];
+  if (Array.isArray(body.clips)) return body.clips as BrollClip[];
+  const metadata = body.brollMetadata as { clips?: unknown } | undefined;
+  if (metadata && Array.isArray(metadata.clips)) return metadata.clips as BrollClip[];
+  return [];
+}
+
+async function clipsFromUrl(url: string): Promise<BrollClip[]> {
+  const normalizedUrl = driveDownloadUrl(url);
+  const cached = metadataCache.get(normalizedUrl);
+  if (cached && Date.now() - cached.loadedAt < 1000 * 60 * 30) return cached.clips;
+
+  const response = await fetch(normalizedUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to load b-roll metadata: ${response.status} ${response.statusText}`);
+  }
+  const json = (await response.json()) as { clips?: BrollClip[] } | BrollClip[];
+  const clips = Array.isArray(json) ? json : Array.isArray(json.clips) ? json.clips : [];
+  metadataCache.set(normalizedUrl, { clips, loadedAt: Date.now() });
+  return clips;
+}
+
+async function loadBrollClips(body: Record<string, unknown>) {
+  const inlineClips = clipsFromPayload(body);
+  if (inlineClips.length) return inlineClips;
+
+  const url = typeof body.brollMetadataUrl === 'string' ? body.brollMetadataUrl : process.env.BROLL_METADATA_URL;
+  if (!url) return [];
+  return clipsFromUrl(url);
 }
 
 function enqueueRender<T>(task: () => Promise<T>) {
@@ -96,6 +136,36 @@ app.post('/validate-plan', requireAuth, (req, res) => {
   const scenes = Array.isArray(req.body?.scenes) ? req.body.scenes : [];
   const result = validateVisualPlan(scenes);
   res.status(result.ok ? 200 : 422).json(result);
+});
+
+app.post('/plan-video', requireAuth, async (req, res) => {
+  const body = (req.body || {}) as Record<string, unknown>;
+  const scenes = Array.isArray(body.scenes)
+    ? body.scenes
+    : Array.isArray(body.timeline)
+      ? body.timeline
+      : [];
+
+  if (!scenes.length) {
+    res.status(400).json({
+      ok: false,
+      error: 'Missing scenes. Send { scenes: [{ sceneIndex, narration, duration }] }.',
+    });
+    return;
+  }
+
+  try {
+    const clips = await loadBrollClips(body);
+    const result = planVideoVisuals(scenes, clips, {
+      ...(typeof body.options === 'object' && body.options ? body.options : {}),
+    });
+    res.status(result.ok ? 200 : 422).json(result);
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 });
 
 app.post('/render-chart', requireAuth, async (req, res) => {
