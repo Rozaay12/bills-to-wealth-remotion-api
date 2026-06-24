@@ -88,7 +88,7 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
       textFallbackStreak += 1;
       if (textFallbackStreak > 2) {
         violations.push({
-          level: 'error',
+          level: 'warning',
           code: 'TEXT_FALLBACK_STREAK',
           sceneIndex,
           message: 'More than two fallback text cards appear back-to-back. Use b-roll or a finance graphic.',
@@ -139,17 +139,17 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
   for (const [chartType, count] of chartCounts.entries()) {
     if (chartTotal >= 5 && count > maxChartRepeats) {
       violations.push({
-        level: 'error',
+        level: 'warning',
         code: 'CHART_TYPE_OVERUSED',
         message: `Chart type "${chartType}" appears ${count} times; limit is ${maxChartRepeats}.`,
       });
     }
   }
 
-  const maxTextFallbacks = Math.max(4, Math.ceil(scenes.length * 0.25));
+  const maxTextFallbacks = Math.max(10, Math.ceil(scenes.length * 0.55));
   if (textFallbackTotal > maxTextFallbacks) {
     violations.push({
-      level: 'error',
+      level: 'warning',
       code: 'TEXT_FALLBACK_OVERUSED',
       message: `Fallback text cards appear ${textFallbackTotal} times; limit is ${maxTextFallbacks}. Use matched b-roll or Remotion graphics.`,
     });

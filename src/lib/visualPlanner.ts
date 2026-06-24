@@ -117,6 +117,7 @@ const QUALITY_FALLBACK = 6.5;
 const MIN_BROLL_SCORE = 14;
 const MIN_RESCUE_BROLL_SCORE = 9;
 const DEFAULT_TARGET_CHARTS = 5;
+const ABSOLUTE_MAX_AUTOMATED_CHARTS = 8;
 
 const backendLabelReplacements: Record<string, string> = {
   budget_pressure: 'monthly budget pressure',
@@ -141,11 +142,18 @@ const stopWords = new Set([
 const intentProfiles: IntentProfile[] = [
   {
     label: 'overdraft fee and debit card decline',
-    categories: ['02_savings_banking', '18_budgeting_bank_app', '01_debt_credit_cards', '13_grocery_shopping'],
+    categories: ['02_savings_banking', '18_budgeting_bank_app', '01_debt_credit_cards', '04_budgeting'],
     keywords: ['overdraft', 'fee', 'debit', 'declined', 'pending', 'gas', 'pump', 'checkout', 'balance', 'alert', 'banking'],
     desiredTerms: ['debit card', 'bank app', 'balance', 'overdraft fee', 'pending charge', 'checkout', 'receipt', 'low balance alert'],
     forbiddenTerms: ['repair', 'mechanic', 'tire', 'wheel', 'hood', 'jack', 'oil', 'garage', 'tools'],
     chartTypes: ['fee_explosion', 'statement_breakdown', 'before_after_cashflow'],
+  },
+  {
+    label: 'payday wallet and cash buffer',
+    categories: ['07_income_paycheck', '18_budgeting_bank_app', '04_budgeting', '02_savings_banking', '05_stress_worry'],
+    keywords: ['payday', 'wallet', 'cash', 'buffer', 'careful', 'thursday', 'short', 'gap', 'calendar', 'envelope'],
+    desiredTerms: ['paycheck', 'wallet', 'cash', 'calendar', 'envelope', 'bank app', 'budget', 'bill due date'],
+    chartTypes: ['before_after_cashflow', 'payment_stack', 'statement_breakdown'],
   },
   {
     label: 'dealership paperwork and loan signing',
@@ -259,6 +267,29 @@ const titleCase = (value = '') =>
     .trim()
     .replace(/\b\w/g, (char) => char.toUpperCase());
 
+function stripWorkflowAnnotations(value = '') {
+  return value
+    .replace(/\|\s*v\d+_[a-z0-9_ -]+=[^|]+/gi, ' ')
+    .replace(/\b(?:bill zoom[- ]?in|free money tool|source card|visual intent|b-roll query|chart payload|lower third|cta):\s*/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function collapseRepeatedSentences(value = '') {
+  const stripped = stripWorkflowAnnotations(value);
+  const sentences = stripped.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [stripped];
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const sentence of sentences) {
+    const cleaned = cleanVisibleText(sentence).trim();
+    const key = normalizeText(cleaned);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(cleaned);
+  }
+  return deduped.join(' ').replace(/\s+/g, ' ').trim();
+}
+
 export function hasInternalVisibleLabel(value = '') {
   const normalized = value.toLowerCase();
   if (/\b(?:budget_pressure|generic_debt|generic_savings|generic_credit|generic_budget|visual_intent|broll_query|chart_payload)\b/.test(normalized)) {
@@ -330,6 +361,7 @@ function rawQualityFor(clip: BrollClip) {
 }
 
 const safeText = (scene: VideoPlanSceneInput) => {
+  const seenValues = new Set<string>();
   const visible = [
     scene.narration,
     scene.voiceoverBeat,
@@ -338,7 +370,13 @@ const safeText = (scene: VideoPlanSceneInput) => {
     isOnlyBackendHint(scene.visualIntent || '') ? '' : scene.visualIntent,
   ]
     .filter(Boolean)
-    .map((value) => cleanVisibleText(String(value)))
+    .map((value) => collapseRepeatedSentences(String(value)))
+    .filter((value) => {
+      const key = normalizeText(value);
+      if (!key || seenValues.has(key)) return false;
+      seenValues.add(key);
+      return true;
+    })
     .filter(Boolean)
     .join(' ')
     .replace(/\s+/g, ' ')
@@ -404,7 +442,7 @@ export function inferSceneIntent(scene: VideoPlanSceneInput): SceneIntent {
     /\b(sign|signed|signing|paperwork|contract|documents?|loan officer|finance manager|dealership)\b/i.test(text) &&
     /\b(car|auto|vehicle|dealership|loan|keys)\b/i.test(text);
 
-  const profile = isPaperwork ? intentProfiles[0] : winner;
+  const profile = isPaperwork ? intentProfiles[1] : winner;
   const highSignalTokens = unique(tokens.filter((token) => token.length > 3)).slice(0, 10);
   const desiredTerms = unique([...profile.desiredTerms, ...highSignalTokens.slice(0, 6)]);
   const forbiddenTerms = unique(profile.forbiddenTerms || []);
@@ -648,9 +686,16 @@ function chooseChartSceneIndexes(scenes: VideoPlanSceneInput[], targetChartCount
   return new Set(selected.sort((a, b) => a - b));
 }
 
+function recommendedChartCountFor(scenes: VideoPlanSceneInput[]) {
+  if (scenes.length >= 32) return DEFAULT_TARGET_CHARTS;
+  if (scenes.length >= 20) return 4;
+  if (scenes.length >= 10) return 3;
+  return Math.min(2, scenes.length);
+}
+
 function makeTextFallback(scene: VideoPlanSceneInput, intent: SceneIntent, usedFingerprints: Set<string>) {
   const text = safeText(scene);
-  const fingerprint = `text:${scene.sceneIndex || 0}:${intent.label}:${text.slice(0, 48)}`;
+  const fingerprint = `text:idx${scene.sceneIndex || 0}:${intent.label}:${text.slice(0, 48)}`;
   const fallbackTitle = fallbackTitleFor(scene, intent);
   usedFingerprints.add(fingerprint);
   return {
@@ -675,6 +720,72 @@ function makeTextFallback(scene: VideoPlanSceneInput, intent: SceneIntent, usedF
   };
 }
 
+function chartFromTextFallback(
+  plannedScene: PlannedVisualScene,
+  originalScene: VideoPlanSceneInput,
+  previousChartType?: ChartType,
+) {
+  const normalizedScene = {
+    ...originalScene,
+    sceneIndex: plannedScene.sceneIndex,
+    sceneId: plannedScene.sceneId,
+    duration: plannedScene.duration,
+  };
+  const intent = inferSceneIntent(normalizedScene);
+  const chartType = chooseChartType(normalizedScene, intent, previousChartType);
+  const chartPayload = buildChartPayload(normalizedScene, intent, chartType);
+  return {
+    ...plannedScene,
+    visualType: 'chart' as const,
+    chartType,
+    chartPayload,
+    suppressCaptions: true,
+    visualFingerprint: `chart:${chartType}:idx${plannedScene.sceneIndex}:${intent.label}`,
+    relevanceScore: 1,
+    qa: {
+      duplicate: false,
+      reason: 'Promoted fallback text into a Remotion chart to prevent long static text-card streaks.',
+      warnings: [],
+    },
+  };
+}
+
+function rebalanceFallbacksWithCharts(planned: PlannedVisualScene[], scenes: VideoPlanSceneInput[], chartBudget: number) {
+  let chartCount = planned.filter((scene) => scene.visualType === 'chart').length;
+  if (chartCount >= chartBudget) return planned;
+
+  const next = [...planned];
+  let textStreak = 0;
+  let previousChartType: ChartType | undefined;
+
+  for (let i = 0; i < next.length; i += 1) {
+    const scene = next[i];
+    if (scene.visualType === 'chart') {
+      textStreak = 0;
+      previousChartType = scene.chartType;
+      continue;
+    }
+    if (scene.visualType !== 'text') {
+      textStreak = 0;
+      previousChartType = undefined;
+      continue;
+    }
+
+    textStreak += 1;
+    const narration = scene.narration || '';
+    const hasMoneyMechanic = hasNumbers(narration) || /\b(overdraft|declined|fee|balance|bank app|payday|buffer|calendar|bill due)\b/i.test(narration);
+    const shouldPromote = textStreak > 2 || hasMoneyMechanic;
+    if (shouldPromote && chartCount < chartBudget) {
+      next[i] = chartFromTextFallback(scene, scenes[i] || scene, previousChartType);
+      chartCount += 1;
+      textStreak = 0;
+      previousChartType = next[i].chartType;
+    }
+  }
+
+  return next;
+}
+
 function kickerFor(text: string) {
   if (/\boverdraft|fee|penalty|declined\b/i.test(text)) return 'Real Cost';
   if (/\bsave|buffer|emergency\b/i.test(text)) return 'Move Two';
@@ -696,12 +807,23 @@ export function planVideoVisuals(
   clips: BrollClip[],
   options: VideoPlanOptions = {},
 ) {
-  const targetChartCount = Math.max(0, Math.min(12, options.targetChartCount ?? DEFAULT_TARGET_CHARTS));
+  const recommendedTargetCharts = recommendedChartCountFor(scenes);
+  const requestedChartCount = Number.isFinite(options.targetChartCount)
+    ? Number(options.targetChartCount)
+    : undefined;
+  const targetChartCount = Math.max(
+    recommendedTargetCharts,
+    Math.min(12, requestedChartCount ?? DEFAULT_TARGET_CHARTS),
+  );
+  const chartBudget = Math.min(
+    ABSOLUTE_MAX_AUTOMATED_CHARTS,
+    Math.max(targetChartCount, Math.ceil(scenes.length * 0.18)),
+  );
   const minBrollScore = options.minBrollScore ?? MIN_BROLL_SCORE;
   const minRescueBrollScore = options.minRescueBrollScore ?? MIN_RESCUE_BROLL_SCORE;
   const chartIndexes = chooseChartSceneIndexes(scenes, targetChartCount);
   const usedFingerprints = new Set<string>();
-  const planned: PlannedVisualScene[] = [];
+  let planned: PlannedVisualScene[] = [];
   const sceneCandidateCount = scenes.reduce(
     (total, scene) => total + (Array.isArray(scene.candidates) ? scene.candidates.length : 0),
     0,
@@ -718,7 +840,7 @@ export function planVideoVisuals(
       const chartType = chooseChartType(normalizedScene, intent, previousChartType);
       previousChartType = chartType;
       const chartPayload = buildChartPayload(normalizedScene, intent, chartType);
-      const visualFingerprint = `chart:${chartType}:${sceneIndex}:${intent.label}`;
+      const visualFingerprint = `chart:${chartType}:idx${sceneIndex}:${intent.label}`;
       usedFingerprints.add(visualFingerprint);
       planned.push({
         sceneIndex,
@@ -776,6 +898,8 @@ export function planVideoVisuals(
     });
   });
 
+  planned = rebalanceFallbacksWithCharts(planned, scenes, chartBudget);
+
   const qaInput: VisualPlanScene[] = planned
     .map((scene) => ({
       sceneIndex: scene.sceneIndex,
@@ -797,7 +921,7 @@ export function planVideoVisuals(
 
   return {
     ok: qa.ok,
-    version: 'v62_priority_upgrade_guardrails',
+    version: 'v63_backend_visual_planner_rescue',
     summary: {
       scenes: planned.length,
       brollCount,
