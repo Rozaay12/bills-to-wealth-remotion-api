@@ -703,8 +703,8 @@ function humanVisualIntent(scene: VideoPlanSceneInput, intent: SceneIntent) {
   const text = safeText(scene);
   if (/\b(sign|signed|signing|paperwork|contract|documents?)\b/i.test(text)) return 'Paperwork, signatures, and the hidden cost in the document.';
   if (isMedicalBeat(text)) return medicalVisualIntent(text, scene);
-  if (isBankingOverdraftBeat(text)) return 'Bank balance, pending charge, and the fee timing.';
-  if (isGroceryBeat(text)) return 'Receipt, shelf price, and unit price detail.';
+  if (isBankingOverdraftBeat(text)) return bankingVisualIntent(text, scene);
+  if (isGroceryBeat(text)) return groceryVisualIntent(text, scene);
   if (isCarBeat(text)) return 'Car payment, financing paperwork, or transportation cost.';
   if (/\bsave|buffer|emergency\b/i.test(text)) return 'Savings buffer and the relief after the money move.';
   return genericVisualIntent(text, scene);
@@ -733,6 +733,47 @@ function medicalVisualIntent(text: string, scene: VideoPlanSceneInput) {
     return 'Unexpected medical expense statistic and household savings risk.';
   }
   return genericVisualIntent(text, scene, 'The bill is not final just because it arrived.');
+}
+
+function bankingVisualIntent(text: string, scene: VideoPlanSceneInput) {
+  if (/\b(reorder|reordered|largest to smallest|posting order|posted|settled|transaction timing)\b/i.test(text)) {
+    return 'Transaction posting order showing how one fee becomes several.';
+  }
+  if (/\b(low balance|alert|notification|warning)\b/i.test(text)) {
+    return 'Low-balance alert set before the overdraft fee hits.';
+  }
+  if (/\b(opt out|turn off|overdraft protection|decline the card)\b/i.test(text)) {
+    return 'Overdraft opt-out setting that blocks the next fee stack.';
+  }
+  if (/\b(refund|waive|waived|recent overdraft fees|two-sentence)\b/i.test(text)) {
+    return 'Refund request script for recent overdraft fees.';
+  }
+  if (/\b(tracker|monitor|catch|patterns|cash-flow)\b/i.test(text)) {
+    return 'Cash-flow tracker watching transaction timing before payday.';
+  }
+  if (/\b(move your money|switch banks|direct deposit|paycheck)\b/i.test(text)) {
+    return 'Paycheck moved away from the bank that profits from fees.';
+  }
+  return genericVisualIntent(text, scene, 'Bank balance, pending charge, and the fee timing.');
+}
+
+function groceryVisualIntent(text: string, scene: VideoPlanSceneInput) {
+  if (/\b(unit price|per ounce|ounces?|oz)\b/i.test(text)) {
+    return 'Unit-price comparison showing the cheaper package is not always cheaper.';
+  }
+  if (/\b(shrinkflation|smaller|less cereal|package|box)\b/i.test(text)) {
+    return 'Package size shrink hiding the real grocery price increase.';
+  }
+  if (/\b(receipt|checkout|cart|cashier)\b/i.test(text)) {
+    return 'Grocery receipt and cart total revealing the hidden leak.';
+  }
+  if (/\b(store brand|brand name|swap|cereal)\b/i.test(text)) {
+    return 'Store-brand swap compared with the expensive box on the shelf.';
+  }
+  if (/\b(tracker|worksheet|checklist|comment)\b/i.test(text)) {
+    return 'Grocery price tracker worksheet for catching the leak.';
+  }
+  return genericVisualIntent(text, scene, 'Receipt, shelf price, and unit price detail.');
 }
 
 function genericVisualIntent(text: string, scene: VideoPlanSceneInput, fallback?: string) {
@@ -1235,7 +1276,14 @@ function fallbackTitleFor(scene: VideoPlanSceneInput, intent: SceneIntent) {
   if (/\b(er|emergency room|medical bill|hospital bill|trauma activation)\b/i.test(text)) return 'The Bill Is An Opening Offer';
   if (isGroceryBeat(text) && /\b(unit price|per ounce|ounces?|oz)\b/i.test(text)) return 'Check The Unit Price';
   if (isGroceryBeat(text) && /\b(shrinkflation|package|smaller|less)\b/i.test(text)) return 'Shrinkflation Hides In The Package';
+  if (isGroceryBeat(text) && /\b(tracker|worksheet|checklist|comment)\b/i.test(text)) return 'Use The Grocery Tracker';
+  if (isGroceryBeat(text) && /\b(store brand|brand name|swap|cereal)\b/i.test(text)) return 'The Store-Brand Swap';
   if (isGroceryBeat(text)) return 'The Receipt Shows The Real Price';
+  if (isBankingOverdraftBeat(text) && /\b(low balance|alert|notification|warning)\b/i.test(text)) return 'Set The Alert Before The Fee';
+  if (isBankingOverdraftBeat(text) && /\b(opt out|turn off|overdraft protection|decline the card)\b/i.test(text)) return 'Opt Out Before The Next Swipe';
+  if (isBankingOverdraftBeat(text) && /\b(refund|waive|waived|recent overdraft fees|two-sentence)\b/i.test(text)) return 'Ask For The Fee Refund';
+  if (isBankingOverdraftBeat(text) && /\b(tracker|monitor|catch|patterns|cash-flow)\b/i.test(text)) return 'Track The Posting Order';
+  if (isBankingOverdraftBeat(text) && /\b(move your money|switch banks|direct deposit|paycheck)\b/i.test(text)) return 'Move The Money Before Payday';
   if (isBankingOverdraftBeat(text) && /\breorder|largest to smallest|payment queue|pending|posted|settled/i.test(text)) return 'The Bank Controls The Order';
   if (isBankingOverdraftBeat(text)) return 'The Fee Was Set Up Before It Hit';
   if (/\bbalance|bank app|alert\b/i.test(text)) return 'The App Is Not The Whole Story';
