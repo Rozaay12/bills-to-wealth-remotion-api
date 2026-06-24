@@ -5,22 +5,32 @@ export type BrollClip = {
   clip_id?: string;
   id?: string;
   url?: string;
+  u?: string;
   direct_url?: string;
   download_url?: string;
   category?: string;
+  c?: string;
   tags?: string[];
   source_filename?: string;
+  filename?: string;
   drive_file_id?: string;
   description?: string;
+  desc?: string;
+  intent?: string;
+  exact?: string[];
+  boost?: string[];
   mood?: string | null;
   shot_type?: string | null;
+  shot?: string | null;
   setting?: string | null;
   people_count?: number | null;
   has_visible_text?: boolean | null;
   contains_foreign_currency?: boolean | null;
   contains_foreign_setting?: boolean | null;
   quality_score?: number | null;
+  q?: number | null;
   thumbnail_url?: string;
+  th?: string;
 };
 
 export type VideoPlanSceneInput = {
@@ -213,6 +223,49 @@ const tokenize = (value = '') =>
 
 const unique = <T>(items: T[]) => Array.from(new Set(items));
 
+const firstText = (...values: Array<string | null | undefined>) =>
+  values.find((value) => typeof value === 'string' && value.trim().length > 0)?.trim() || '';
+
+function clipUrl(clip: BrollClip) {
+  return firstText(clip.url, clip.u, clip.direct_url, clip.download_url);
+}
+
+function clipCategory(clip: BrollClip) {
+  return firstText(clip.category, clip.c) || 'uncategorized';
+}
+
+function clipDescription(clip: BrollClip) {
+  return firstText(clip.description, clip.desc);
+}
+
+function clipSourceFilename(clip: BrollClip) {
+  return firstText(clip.source_filename, clip.filename);
+}
+
+function clipThumbnailUrl(clip: BrollClip) {
+  return firstText(clip.thumbnail_url, clip.th);
+}
+
+function clipTags(clip: BrollClip) {
+  const baseTags = Array.isArray(clip.tags) ? clip.tags : [];
+  return unique([
+    ...baseTags,
+    ...(Array.isArray(clip.exact) ? clip.exact : []),
+    ...(Array.isArray(clip.boost) ? clip.boost : []),
+    clip.intent,
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length > 0));
+}
+
+function rawQualityFor(clip: BrollClip) {
+  if (typeof clip.quality_score === 'number' && Number.isFinite(clip.quality_score)) {
+    return clip.quality_score;
+  }
+  if (typeof clip.q === 'number' && Number.isFinite(clip.q)) {
+    return clip.q;
+  }
+  return null;
+}
+
 const safeText = (scene: VideoPlanSceneInput) =>
   [
     scene.visualIntent,
@@ -237,26 +290,28 @@ function countMatches(text: string, terms: string[]) {
 
 function clipText(clip: BrollClip) {
   return [
-    clip.category,
-    clip.description,
+    clipCategory(clip),
+    clipDescription(clip),
     clip.setting,
     clip.mood,
     clip.shot_type,
-    clip.source_filename,
-    ...(clip.tags || []),
+    clip.shot,
+    clipSourceFilename(clip),
+    ...clipTags(clip),
   ]
     .filter(Boolean)
     .join(' ');
 }
 
 function clipIdentity(clip: BrollClip) {
-  return String(clip.clip_id || clip.id || clip.drive_file_id || clip.url || '').trim();
+  return String(clip.clip_id || clip.id || clip.drive_file_id || clipUrl(clip) || '').trim();
 }
 
 export function driveDirectUrl(clip: BrollClip) {
   if (clip.direct_url || clip.download_url) return clip.direct_url || clip.download_url;
-  const id = clip.drive_file_id || clip.url?.match(/\/d\/([^/]+)/)?.[1] || clip.url?.match(/[?&]id=([^&]+)/)?.[1];
-  if (!id) return clip.url || '';
+  const url = clipUrl(clip);
+  const id = clip.drive_file_id || url.match(/\/d\/([^/]+)/)?.[1] || url.match(/[?&]id=([^&]+)/)?.[1];
+  if (!id) return url;
   return `https://drive.google.com/uc?id=${encodeURIComponent(id)}&export=download`;
 }
 
@@ -297,9 +352,7 @@ export function inferSceneIntent(scene: VideoPlanSceneInput): SceneIntent {
 }
 
 function qualityFor(clip: BrollClip) {
-  return typeof clip.quality_score === 'number' && Number.isFinite(clip.quality_score)
-    ? clip.quality_score
-    : QUALITY_FALLBACK;
+  return rawQualityFor(clip) ?? QUALITY_FALLBACK;
 }
 
 function isGenericScreenClip(clip: BrollClip) {
@@ -310,8 +363,10 @@ function scoreClip(clip: BrollClip, intent: SceneIntent, usedFingerprints: Set<s
   const text = clipText(clip);
   const normalized = normalizeText(text);
   const identity = clipIdentity(clip);
-  const fingerprint = identity || normalizeText(`${clip.category || ''}:${clip.url || ''}`);
-  if (!identity || !clip.url) return { score: -999, warnings: ['missing_url_or_identity'] };
+  const url = clipUrl(clip);
+  const category = clipCategory(clip);
+  const fingerprint = identity || normalizeText(`${category}:${url}`);
+  if (!identity || !url) return { score: -999, warnings: ['missing_url_or_identity'] };
   if (usedFingerprints.has(fingerprint)) return { score: -999, warnings: ['duplicate_clip'] };
 
   let score = 0;
@@ -319,7 +374,7 @@ function scoreClip(clip: BrollClip, intent: SceneIntent, usedFingerprints: Set<s
   const quality = qualityFor(clip);
   score += quality;
 
-  if (intent.categories.includes(String(clip.category))) score += 12;
+  if (intent.categories.includes(String(category))) score += 12;
   score += countMatches(normalized, intent.desiredTerms) * 4;
   score += countMatches(normalized, intent.highSignalTokens) * 2;
 
@@ -341,7 +396,7 @@ function scoreClip(clip: BrollClip, intent: SceneIntent, usedFingerprints: Set<s
     score -= 7;
     warnings.push('generic_screen_clip');
   }
-  if (clip.quality_score == null) {
+  if (rawQualityFor(clip) == null) {
     score -= 0.75;
     warnings.push('missing_quality_score_used_fallback');
   }
@@ -374,17 +429,17 @@ function selectBrollClip(
   const clipId = clipIdentity(clip);
   return {
     clipId,
-    url: clip.url || '',
+    url: clipUrl(clip),
     directUrl: driveDirectUrl(clip),
-    thumbnailUrl: clip.thumbnail_url,
-    category: clip.category || 'uncategorized',
-    tags: clip.tags || [],
-    description: clip.description || '',
+    thumbnailUrl: clipThumbnailUrl(clip),
+    category: clipCategory(clip),
+    tags: clipTags(clip),
+    description: clipDescription(clip),
     qualityScore: qualityFor(clip),
-    rawQualityScore: clip.quality_score ?? null,
+    rawQualityScore: rawQualityFor(clip),
     score: Number(selected.score.toFixed(2)),
     driveFileId: clip.drive_file_id,
-    sourceFilename: clip.source_filename,
+    sourceFilename: clipSourceFilename(clip),
     warnings: selected.warnings,
   };
 }
