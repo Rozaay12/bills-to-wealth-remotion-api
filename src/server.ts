@@ -219,7 +219,13 @@ async function loadBrollClips(body: Record<string, unknown>) {
   const url = typeof body.brollMetadataUrl === 'string' ? body.brollMetadataUrl : process.env.BROLL_METADATA_URL;
   if (!url) return inlineClips;
 
-  const remoteClips = await clipsFromUrl(url);
+  let remoteClips: BrollClip[] = [];
+  try {
+    remoteClips = await clipsFromUrl(url);
+  } catch (error) {
+    if (inlineClips.length) return inlineClips;
+    throw error;
+  }
   if (!inlineClips.length) return remoteClips;
 
   const seen = new Set<string>();
