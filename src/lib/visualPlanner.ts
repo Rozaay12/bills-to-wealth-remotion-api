@@ -668,15 +668,17 @@ export function planVideoVisuals(
     });
   });
 
-  const qaInput: VisualPlanScene[] = planned.map((scene) => ({
-    sceneIndex: scene.sceneIndex,
-    visualType: scene.visualType,
-    chartType: scene.chartType,
-    assetUrl: scene.selectedClip?.url,
-    providerId: scene.selectedClip?.clipId,
-    query: scene.brollQuery || scene.visualIntent,
-    fingerprint: scene.visualFingerprint,
-  }));
+  const qaInput: VisualPlanScene[] = planned
+    .filter((scene) => scene.visualType === 'broll' || scene.visualType === 'chart')
+    .map((scene) => ({
+      sceneIndex: scene.sceneIndex,
+      visualType: scene.visualType,
+      chartType: scene.chartType,
+      assetUrl: scene.selectedClip?.url,
+      providerId: scene.selectedClip?.clipId,
+      query: scene.brollQuery || scene.visualIntent,
+      fingerprint: scene.visualFingerprint,
+    }));
   const qa = validateVisualPlan(qaInput);
   const brollCount = planned.filter((scene) => scene.visualType === 'broll').length;
   const chartCount = planned.filter((scene) => scene.visualType === 'chart').length;
