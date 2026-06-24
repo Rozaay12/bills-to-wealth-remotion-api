@@ -89,7 +89,10 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
         message: `Scene contains backend/internal visible text: "${visibleFields.slice(0, 120)}".`,
       });
     }
-    const visibleTextKey = normalize([scene.title, scene.visualIntent, scene.visibleText].filter(Boolean).join(' '));
+    const visibleCardText = scene.visualType === 'text'
+      ? [scene.title, scene.visualIntent, scene.visibleText].filter(Boolean).join(' ')
+      : [scene.title, scene.visibleText].filter(Boolean).join(' ');
+    const visibleTextKey = normalize(visibleCardText);
     if (visibleTextKey && !/\b(?:subscribe|comment tracker|worksheet|download)\b/i.test(visibleFields)) {
       const list = visibleTextCounts.get(visibleTextKey) || [];
       list.push(sceneIndex);
@@ -177,11 +180,18 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
   }
 
   const maxTextFallbacks = Math.max(2, Math.ceil(scenes.length * 0.25));
-  if (plainTextFallbackTotal > maxTextFallbacks) {
+  const hardMaxTextFallbacks = Math.max(maxTextFallbacks + 2, Math.ceil(scenes.length * 0.4));
+  if (plainTextFallbackTotal > hardMaxTextFallbacks) {
     violations.push({
       level: 'error',
       code: 'TEXT_FALLBACK_OVERUSED',
-      message: `Plain text fallback cards appear ${plainTextFallbackTotal} times; limit is ${maxTextFallbacks}. Use matched b-roll or Remotion graphics.`,
+      message: `Plain text fallback cards appear ${plainTextFallbackTotal} times; hard limit is ${hardMaxTextFallbacks}. Use matched b-roll or Remotion graphics.`,
+    });
+  } else if (plainTextFallbackTotal > maxTextFallbacks) {
+    violations.push({
+      level: 'warning',
+      code: 'TEXT_FALLBACK_HEAVY',
+      message: `Plain text fallback cards appear ${plainTextFallbackTotal} times; target is ${maxTextFallbacks}. Render can continue, but add more matched B-roll or structured graphics.`,
     });
   }
 
