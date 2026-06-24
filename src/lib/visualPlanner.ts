@@ -118,6 +118,7 @@ const MIN_BROLL_SCORE = 14;
 const MIN_RESCUE_BROLL_SCORE = 9;
 const DEFAULT_TARGET_CHARTS = 5;
 const ABSOLUTE_MAX_AUTOMATED_CHARTS = 8;
+const DEFAULT_INTENT_PROFILE_INDEX = 4; // budgeting/monthly bills is safer than car/dealership for unknown beats.
 
 const backendLabelReplacements: Record<string, string> = {
   budget_pressure: 'monthly budget pressure',
@@ -194,8 +195,8 @@ const intentProfiles: IntentProfile[] = [
   {
     label: 'grocery inflation',
     categories: ['13_grocery_shopping', '19_inflation_expenses', '04_budgeting'],
-    keywords: ['grocery', 'groceries', 'food', 'supermarket', 'prices', 'inflation', 'receipt'],
-    desiredTerms: ['grocery', 'supermarket', 'receipt', 'price tag', 'shopping cart', 'produce'],
+    keywords: ['grocery', 'groceries', 'food', 'supermarket', 'prices', 'inflation', 'receipt', 'cereal', 'bakery', 'shelf', 'unit price', 'ounce', 'ounces', 'shrinkflation', 'store brand', 'cart'],
+    desiredTerms: ['grocery', 'supermarket', 'receipt', 'price tag', 'unit price', 'shelf tag', 'shopping cart', 'produce', 'cereal', 'bakery'],
     chartTypes: ['payment_stack', 'debt_waterfall'],
   },
   {
@@ -437,12 +438,12 @@ export function inferSceneIntent(scene: VideoPlanSceneInput): SceneIntent {
     }))
     .sort((a, b) => b.score - a.score);
 
-  const winner = scored[0]?.score > 0 ? scored[0].profile : intentProfiles[2];
+  const winner = scored[0]?.score > 0 ? scored[0].profile : intentProfiles[DEFAULT_INTENT_PROFILE_INDEX];
   const isPaperwork =
     /\b(sign|signed|signing|paperwork|contract|documents?|loan officer|finance manager|dealership)\b/i.test(text) &&
     /\b(car|auto|vehicle|dealership|loan|keys)\b/i.test(text);
 
-  const profile = isPaperwork ? intentProfiles[1] : winner;
+  const profile = isPaperwork ? intentProfiles[2] : winner;
   const highSignalTokens = unique(tokens.filter((token) => token.length > 3)).slice(0, 10);
   const desiredTerms = unique([...profile.desiredTerms, ...highSignalTokens.slice(0, 6)]);
   const forbiddenTerms = unique(profile.forbiddenTerms || []);
@@ -563,6 +564,23 @@ function hasNumbers(text: string) {
   return /(\$|\b\d+%|\bapr\b|\binterest\b|\bfee\b|\bpayment\b|\bmonthly\b|\bbalance\b)/i.test(text);
 }
 
+function isGroceryBeat(text: string) {
+  return /\b(grocery|groceries|supermarket|checkout|receipt|shelf|unit price|per ounce|ounces?|package|shrinkflation|store brand|food price|cart|cereal|bakery|produce|store aisle)\b/i.test(text);
+}
+
+function isCarBeat(text: string) {
+  return /\b(car|vehicle|dealership|dealer|auto loan|mechanic|repair|insurance|gas|maintenance)\b/i.test(text);
+}
+
+function isChartWorthyText(text: string) {
+  const numberWord = '(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)';
+  const hasExplicitMetric =
+    /(\$|\b\d+(?:\.\d+)?\s?%|\b\d+\s?(?:dollars?|bucks?|months?|years?|weeks?|ounces?|oz|per|lower|higher|less|more)\b)/i.test(text) ||
+    new RegExp(`\\b${numberWord}\\s+(?:dollars?|bucks?|percent|months?|years?|weeks?|ounces?|items?|products?)\\b`, 'i').test(text);
+  const hasFinanceMechanic = /\b(apr|interest|fee|payment|monthly|balance|statement|rent|mortgage|insurance|save|savings|refund|cost|price|unit price|per ounce|shrinkflation|inflation|budget|debt|cashflow|buffer)\b/i.test(text);
+  return hasExplicitMetric && hasFinanceMechanic;
+}
+
 function chooseChartType(scene: VideoPlanSceneInput, intent: SceneIntent, previousChartType?: ChartType): ChartType {
   const text = safeText(scene);
   const preferred = [...intent.chartTypes];
@@ -587,6 +605,28 @@ function extractMoneyValues(text: string) {
 function chartValuesFor(scene: VideoPlanSceneInput, chartType: ChartType) {
   const text = safeText(scene);
   const values = extractMoneyValues(text);
+  if (isGroceryBeat(text)) {
+    if (/\b(unit price|per ounce|ounces?|oz)\b/i.test(text)) {
+      return [
+        { label: 'Shelf price', amount: values[0] || 6 },
+        { label: 'Ounces', amount: values[1] || 12 },
+        { label: 'Cost per ounce', amount: values[2] || 50 },
+      ];
+    }
+    if (/\b(shrinkflation|package|smaller|less)\b/i.test(text)) {
+      return [
+        { label: 'Old package', amount: values[0] || 16 },
+        { label: 'New package', amount: values[1] || 14 },
+        { label: 'Real increase', amount: values[2] || 12 },
+      ];
+    }
+    return [
+      { label: 'Shelf price', amount: values[0] || 6 },
+      { label: 'Unit price', amount: values[1] || 50 },
+      { label: 'Weekly cart', amount: values[2] || 140 },
+      { label: 'Possible savings', amount: values[3] || 40 },
+    ];
+  }
   if (chartType === 'interest_trap_timeline') {
     const base = values[0] || 450;
     return [
@@ -618,7 +658,7 @@ function chartValuesFor(scene: VideoPlanSceneInput, chartType: ChartType) {
       { label: 'After', amount: values[1] || 240 },
     ];
   }
-  if (/\b(car|vehicle|dealership|auto)\b/i.test(text)) {
+  if (isCarBeat(text)) {
     return [
       { label: 'Payment', amount: values[0] || 590 },
       { label: 'Insurance', amount: values[1] || 170 },
@@ -637,6 +677,11 @@ function chartValuesFor(scene: VideoPlanSceneInput, chartType: ChartType) {
 
 function shortTitle(scene: VideoPlanSceneInput, chartType: ChartType) {
   const text = safeText(scene);
+  if (isGroceryBeat(text)) {
+    if (/\b(unit price|per ounce|ounces?|oz)\b/i.test(text)) return 'The Unit Price Trap';
+    if (/\b(shrinkflation|package|smaller|less)\b/i.test(text)) return 'Shrinkflation Hides Here';
+    return 'The Grocery Price Trap';
+  }
   if (/\b(overdraft|declined|pending|low balance|bank app|debit)\b/i.test(text)) {
     if (chartType === 'fee_explosion') return 'When The Fee Hits';
     if (chartType === 'before_after_cashflow') return 'The Buffer That Stops The Fee';
@@ -646,7 +691,7 @@ function shortTitle(scene: VideoPlanSceneInput, chartType: ChartType) {
   if (chartType === 'statement_breakdown') return 'The Statement Shows The Trap';
   if (chartType === 'fee_explosion') return 'Small Fees Become Real Money';
   if (chartType === 'before_after_cashflow') return 'Before And After The Decision';
-  if (/\b(car|vehicle|dealership|auto)\b/i.test(text)) return 'The Real Cost Of The Car';
+  if (isCarBeat(text)) return 'The Real Cost Of The Car';
   if (/\b(rent|mortgage|housing)\b/i.test(text)) return 'The Housing Payment Stack';
   return 'The Real Monthly Cost';
 }
@@ -669,9 +714,10 @@ function chooseChartSceneIndexes(scenes: VideoPlanSceneInput[], targetChartCount
   const candidates = scenes
     .map((scene, index) => {
       const text = safeText(scene);
-      let score = hasNumbers(text) ? 8 : 0;
-      if (/\b(apr|interest|fee|payment|monthly|balance|statement|rent|mortgage|insurance|gas|save|savings)\b/i.test(text)) score += 7;
-      if (/\b(here is|watch|number|cost|trap|real|hidden)\b/i.test(text)) score += 3;
+      if (!isChartWorthyText(text)) return { scene, index, score: 0 };
+      let score = hasNumbers(text) ? 8 : 4;
+      if (/\b(apr|interest|fee|payment|monthly|balance|statement|rent|mortgage|insurance|gas|save|savings|unit price|per ounce|shrinkflation|inflation|checkout|receipt)\b/i.test(text)) score += 7;
+      if (/\b(here is|watch|number|cost|trap|real|hidden|compare|lower|higher|less|more)\b/i.test(text)) score += 3;
       return { scene, index, score };
     })
     .filter((item) => item.score > 0)
@@ -773,8 +819,7 @@ function rebalanceFallbacksWithCharts(planned: PlannedVisualScene[], scenes: Vid
 
     textStreak += 1;
     const narration = scene.narration || '';
-    const hasMoneyMechanic = hasNumbers(narration) || /\b(overdraft|declined|fee|balance|bank app|payday|buffer|calendar|bill due)\b/i.test(narration);
-    const shouldPromote = textStreak > 2 || hasMoneyMechanic;
+    const shouldPromote = isChartWorthyText(narration);
     if (shouldPromote && chartCount < chartBudget) {
       next[i] = chartFromTextFallback(scene, scenes[i] || scene, previousChartType);
       chartCount += 1;
@@ -921,7 +966,7 @@ export function planVideoVisuals(
 
   return {
     ok: qa.ok,
-    version: 'v63_backend_visual_planner_rescue',
+    version: 'v64_intent_broll_first_chart_guard',
     summary: {
       scenes: planned.length,
       brollCount,
