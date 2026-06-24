@@ -119,6 +119,7 @@ const MIN_BROLL_SCORE = 14;
 const MIN_RESCUE_BROLL_SCORE = 9;
 const DEFAULT_TARGET_CHARTS = 5;
 const ABSOLUTE_MAX_AUTOMATED_CHARTS = 8;
+const MAX_CHART_TYPE_REPEATS = 2;
 const DEFAULT_INTENT_PROFILE_INDEX = 4; // budgeting/monthly bills is safer than car/dealership for unknown beats.
 const KNOWN_LIBRARY_CATEGORY = /^\d{2}_[a-z0-9_]+$/;
 
@@ -275,6 +276,10 @@ function stripWorkflowAnnotations(value = '') {
   return value
     .replace(/\|\s*v\d+_[a-z0-9_ -]+=[^|]+/gi, ' ')
     .replace(/\b(?:bill zoom[- ]?in|free money tool|source card|visual intent|b-roll query|chart payload|lower third|cta):\s*/gi, ' ')
+    .replace(/\bshow\s+the\s+specific\s+money\s+decision:\s*/gi, ' ')
+    .replace(/\byour\s+editor\s+can\s+show\s+this\s+as\s+[^.!?]+[.!?]?/gi, ' ')
+    .replace(/\bfilm\s+this\s+as\s+[^.!?]+[.!?]?/gi, ' ')
+    .replace(/\bfilm\s+the\s+[^.!?]+[.!?]?/gi, ' ')
     .replace(/\b(?:grocery inflation|the trap|general|debt\/stress|debt stress|real payment stack|bill checkpoint|payday|credit card debt|medical bills?|healthcare bills?|banking and savings|budgeting and monthly bills|car repair and transportation costs|subscriptions and app charges|income and paycheck):\s*/gi, ' ')
     .replace(/\s+—\s*b-roll\s+for\b.*$/gi, ' ')
     .replace(/\s+/g, ' ')
@@ -312,6 +317,10 @@ export function cleanVisibleText(value = '', fallback = '') {
     cleaned = cleaned.replace(new RegExp(`\\b${token}\\b`, 'gi'), replacement);
   }
   cleaned = cleaned
+    .replace(/\bshow\s+the\s+specific\s+money\s+decision:\s*/gi, ' ')
+    .replace(/\byour\s+editor\s+can\s+show\s+this\s+as\s+[^.!?]+[.!?]?/gi, ' ')
+    .replace(/\bfilm\s+this\s+as\s+[^.!?]+[.!?]?/gi, ' ')
+    .replace(/\bfilm\s+the\s+[^.!?]+[.!?]?/gi, ' ')
     .replace(/\s+#\d+\b/g, '')
     .replace(/\b([a-z]+(?:_[a-z0-9]+)+)\b/g, (_match, token: string) => titleCase(token))
     .replace(/\s+/g, ' ')
@@ -555,7 +564,7 @@ export function inferSceneIntent(scene: VideoPlanSceneInput): SceneIntent {
   const highSignalTokens = unique(tokens.filter((token) => token.length > 3)).slice(0, 10);
   const desiredTerms = unique([...profile.desiredTerms, ...highSignalTokens.slice(0, 6)]);
   const forbiddenTerms = unique(profile.forbiddenTerms || []);
-  const query = unique([...profile.desiredTerms.slice(0, 5), ...highSignalTokens.slice(0, 4)]).join(' ');
+  const query = unique([...highSignalTokens.slice(0, 6), ...profile.desiredTerms.slice(0, 5)]).join(' ');
 
   return {
     label: profile.label,
@@ -692,13 +701,13 @@ function conciseBeat(scene: VideoPlanSceneInput) {
 
 function humanVisualIntent(scene: VideoPlanSceneInput, intent: SceneIntent) {
   const text = safeText(scene);
-  if (/\b(sign|signed|signing|paperwork|contract|documents?)\b/i.test(text)) return 'Show the paperwork, signature, and decision point.';
-  if (isMedicalBeat(text)) return 'Show the medical bill, paperwork, clinic, or billing call.';
-  if (isBankingOverdraftBeat(text)) return 'Show the card, bank app, balance, pending charge, or declined payment moment.';
-  if (isGroceryBeat(text)) return 'Show the receipt, price tag, or grocery checkout detail.';
-  if (isCarBeat(text)) return 'Show the car payment, dealership paperwork, or transportation cost.';
-  if (/\bsave|buffer|emergency\b/i.test(text)) return 'Show the savings buffer or relief moment.';
-  return `Show the specific money decision: ${intent.query}`.slice(0, 120);
+  if (/\b(sign|signed|signing|paperwork|contract|documents?)\b/i.test(text)) return 'Paperwork, signatures, and the hidden cost in the document.';
+  if (isMedicalBeat(text)) return 'Medical bill, itemized charges, and the call before paying.';
+  if (isBankingOverdraftBeat(text)) return 'Bank balance, pending charge, and the fee timing.';
+  if (isGroceryBeat(text)) return 'Receipt, shelf price, and unit price detail.';
+  if (isCarBeat(text)) return 'Car payment, financing paperwork, or transportation cost.';
+  if (/\bsave|buffer|emergency\b/i.test(text)) return 'Savings buffer and the relief after the money move.';
+  return 'The money move and its real cost.';
 }
 
 function hasNumbers(text: string) {
@@ -737,7 +746,12 @@ function isChartWorthyText(text: string) {
   return hasExplicitMetric && hasFinanceMechanic;
 }
 
-function chooseChartType(scene: VideoPlanSceneInput, intent: SceneIntent, previousChartType?: ChartType): ChartType {
+function chooseChartType(
+  scene: VideoPlanSceneInput,
+  intent: SceneIntent,
+  previousChartType?: ChartType,
+  chartTypeCounts: Map<ChartType, number> = new Map(),
+): ChartType {
   const text = safeText(scene);
   const preferred = [...intent.chartTypes];
   if (isMedicalBeat(text)) preferred.unshift('statement_breakdown', 'fee_explosion');
@@ -750,7 +764,12 @@ function chooseChartType(scene: VideoPlanSceneInput, intent: SceneIntent, previo
   if (!isMedicalBeat(text) && /\b(monthly|payment|insurance|gas|rent|budget)\b/i.test(text)) preferred.unshift('payment_stack');
 
   const uniquePreferred = unique(preferred.filter((type) => chartTypes.includes(type)));
-  return uniquePreferred.find((type) => type !== previousChartType) || uniquePreferred[0] || 'payment_stack';
+  return (
+    uniquePreferred.find((type) => type !== previousChartType && (chartTypeCounts.get(type) || 0) < MAX_CHART_TYPE_REPEATS) ||
+    uniquePreferred.find((type) => type !== previousChartType) ||
+    uniquePreferred[0] ||
+    'payment_stack'
+  );
 }
 
 const numberWords: Record<string, number> = {
@@ -1026,7 +1045,7 @@ function makeTextFallback(scene: VideoPlanSceneInput, intent: SceneIntent, usedF
     fallbackStyle,
     fallbackTitle,
     fallbackKicker: kickerFor(text),
-    fallbackText: conciseBeat(scene),
+    fallbackText: fallbackBodyFor(scene, intent),
     suppressCaptions: true,
     visualFingerprint: fingerprint,
     relevanceScore: 0,
@@ -1042,6 +1061,7 @@ function chartFromTextFallback(
   plannedScene: PlannedVisualScene,
   originalScene: VideoPlanSceneInput,
   previousChartType?: ChartType,
+  chartTypeCounts: Map<ChartType, number> = new Map(),
 ) {
   const normalizedScene = {
     ...originalScene,
@@ -1050,7 +1070,7 @@ function chartFromTextFallback(
     duration: plannedScene.duration,
   };
   const intent = inferSceneIntent(normalizedScene);
-  const chartType = chooseChartType(normalizedScene, intent, previousChartType);
+  const chartType = chooseChartType(normalizedScene, intent, previousChartType, chartTypeCounts);
   const chartPayload = buildChartPayload(normalizedScene, intent, chartType);
   return {
     ...plannedScene,
@@ -1075,6 +1095,12 @@ function rebalanceFallbacksWithCharts(planned: PlannedVisualScene[], scenes: Vid
   const next = [...planned];
   let textStreak = 0;
   let previousChartType: ChartType | undefined;
+  const chartTypeCounts = new Map<ChartType, number>();
+  next.forEach((scene) => {
+    if (scene.visualType === 'chart' && scene.chartType) {
+      chartTypeCounts.set(scene.chartType, (chartTypeCounts.get(scene.chartType) || 0) + 1);
+    }
+  });
 
   for (let i = 0; i < next.length; i += 1) {
     const scene = next[i];
@@ -1093,10 +1119,14 @@ function rebalanceFallbacksWithCharts(planned: PlannedVisualScene[], scenes: Vid
     const narration = scene.narration || '';
     const shouldPromote = isChartWorthyText(narration);
     if (shouldPromote && chartCount < chartBudget) {
-      next[i] = chartFromTextFallback(scene, scenes[i] || scene, previousChartType);
+      next[i] = chartFromTextFallback(scene, scenes[i] || scene, previousChartType, chartTypeCounts);
       chartCount += 1;
       textStreak = 0;
-      previousChartType = next[i].chartType;
+      const newChartType = next[i].chartType;
+      previousChartType = newChartType;
+      if (newChartType) {
+        chartTypeCounts.set(newChartType, (chartTypeCounts.get(newChartType) || 0) + 1);
+      }
     }
   }
 
@@ -1173,6 +1203,30 @@ function fallbackTitleFor(scene: VideoPlanSceneInput, intent: SceneIntent) {
   return subtitleForScene(scene, intent).replace(/[.!?]+$/, '');
 }
 
+function fallbackBodyFor(scene: VideoPlanSceneInput, intent: SceneIntent) {
+  const text = safeText(scene);
+  const cleaned = conciseBeat(scene);
+  const normalizedCleaned = normalizeText(cleaned);
+  const looksLikeDirection =
+    !cleaned ||
+    ['paperwork contract documents signature pen', 'debit card bank app balance overdraft fee pending charge', 'budget bills calculator notebook receipt'].some((query) =>
+      normalizedCleaned.startsWith(query),
+    ) ||
+    /\b(?:film|shoot|editor|b-roll|visual sequence|show the specific|hand tapping|scissors on the kitchen table)\b/i.test(cleaned);
+  if (!looksLikeDirection && cleaned.length >= 12) return cleaned;
+  if (isBankingOverdraftBeat(text)) {
+    if (/\b(low balance|alert|toggle|notification)\b/i.test(text)) return 'Set a low-balance alert before the fee hits.';
+    if (/\b(overdraft protection|turn it off|opt out)\b/i.test(text)) return 'Turn off the setting that lets fees stack.';
+    if (/\b(direct deposit|move|switch|account)\b/i.test(text)) return 'Move the account before the next paycheck lands.';
+    return 'The fee starts before the charge fully posts.';
+  }
+  if (/\b(sign|signed|signing|paperwork|contract|documents?)\b/i.test(text)) return 'The real cost is hiding in the paperwork.';
+  if (isMedicalBeat(text)) return 'Ask for the itemized bill before you pay.';
+  if (isGroceryBeat(text)) return 'The receipt shows where the money went.';
+  if (/\b(first|second|third|three moves|steps?)\b/i.test(text)) return 'Use the next step before the fee hits.';
+  return subtitleForScene(scene, intent);
+}
+
 export function planVideoVisuals(
   scenes: VideoPlanSceneInput[],
   clips: BrollClip[],
@@ -1200,6 +1254,7 @@ export function planVideoVisuals(
     0,
   );
   let previousChartType: ChartType | undefined;
+  const chartTypeCounts = new Map<ChartType, number>();
 
   scenes.forEach((scene, index) => {
     const sceneIndex = scene.sceneIndex ?? index + 1;
@@ -1208,8 +1263,9 @@ export function planVideoVisuals(
     const intent = inferSceneIntent(normalizedScene);
 
     if (chartIndexes.has(index)) {
-      const chartType = chooseChartType(normalizedScene, intent, previousChartType);
+      const chartType = chooseChartType(normalizedScene, intent, previousChartType, chartTypeCounts);
       previousChartType = chartType;
+      chartTypeCounts.set(chartType, (chartTypeCounts.get(chartType) || 0) + 1);
       const chartPayload = buildChartPayload(normalizedScene, intent, chartType);
       const visualFingerprint = `chart:${chartType}:idx${sceneIndex}:${intent.label}`;
       usedFingerprints.add(visualFingerprint);
