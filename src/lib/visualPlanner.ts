@@ -115,10 +115,10 @@ type SceneIntent = {
 };
 
 const QUALITY_FALLBACK = 6.5;
-const MIN_BROLL_SCORE = 14;
-const MIN_RESCUE_BROLL_SCORE = 9;
-const DEFAULT_TARGET_CHARTS = 5;
-const ABSOLUTE_MAX_AUTOMATED_CHARTS = 8;
+const MIN_BROLL_SCORE = 12;
+const MIN_RESCUE_BROLL_SCORE = 6;
+const DEFAULT_TARGET_CHARTS = 3;
+const ABSOLUTE_MAX_AUTOMATED_CHARTS = 6;
 const MAX_CHART_TYPE_REPEATS = 2;
 const DEFAULT_INTENT_PROFILE_INDEX = 4; // budgeting/monthly bills is safer than car/dealership for unknown beats.
 const KNOWN_LIBRARY_CATEGORY = /^\d{2}_[a-z0-9_]+$/;
@@ -1106,10 +1106,20 @@ function chooseChartSceneIndexes(scenes: VideoPlanSceneInput[], targetChartCount
 }
 
 function recommendedChartCountFor(scenes: VideoPlanSceneInput[]) {
-  if (scenes.length >= 32) return DEFAULT_TARGET_CHARTS;
-  if (scenes.length >= 20) return 4;
-  if (scenes.length >= 10) return 3;
+  const totalDuration = scenes.reduce((total, scene) => total + (Number(scene.duration) || 4), 0);
+  if (totalDuration >= 480) return 6;
+  if (totalDuration >= 360) return 4;
+  if (totalDuration >= 180) return 3;
+  if (scenes.length >= 10) return 2;
   return Math.min(2, scenes.length);
+}
+
+function maxChartCountForDuration(scenes: VideoPlanSceneInput[]) {
+  const totalDuration = scenes.reduce((total, scene) => total + (Number(scene.duration) || 4), 0);
+  if (totalDuration >= 480) return 6;
+  if (totalDuration >= 360) return 4;
+  if (totalDuration >= 180) return 3;
+  return 2;
 }
 
 function makeTextFallback(scene: VideoPlanSceneInput, intent: SceneIntent, usedFingerprints: Set<string>) {
@@ -1327,14 +1337,13 @@ export function planVideoVisuals(
   const requestedChartCount = Number.isFinite(options.targetChartCount)
     ? Number(options.targetChartCount)
     : undefined;
-  const targetChartCount = Math.max(
-    recommendedTargetCharts,
-    Math.min(12, requestedChartCount ?? DEFAULT_TARGET_CHARTS),
-  );
-  const chartBudget = Math.min(
+  const durationChartCap = maxChartCountForDuration(scenes);
+  const targetChartCount = Math.min(
+    durationChartCap,
     ABSOLUTE_MAX_AUTOMATED_CHARTS,
-    Math.max(targetChartCount, Math.ceil(scenes.length * 0.18)),
+    Math.max(recommendedTargetCharts, requestedChartCount ?? DEFAULT_TARGET_CHARTS),
   );
+  const chartBudget = targetChartCount;
   const minBrollScore = options.minBrollScore ?? MIN_BROLL_SCORE;
   const minRescueBrollScore = options.minRescueBrollScore ?? MIN_RESCUE_BROLL_SCORE;
   const chartIndexes = chooseChartSceneIndexes(scenes, targetChartCount);
@@ -1439,7 +1448,7 @@ export function planVideoVisuals(
   const fallbackCount = planned.filter((scene) => scene.visualType === 'text').length;
   const clipsAvailable = clips.length || sceneCandidateCount;
   const minimumBrollCoverage = clipsAvailable > 0
-    ? Math.min(12, Math.max(6, Math.ceil((planned.length - chartCount) * 0.38)))
+    ? Math.min(planned.length - chartCount, Math.max(8, Math.ceil((planned.length - chartCount) * 0.65)))
     : 0;
   const coverageViolations = brollCount < minimumBrollCoverage
     ? [
