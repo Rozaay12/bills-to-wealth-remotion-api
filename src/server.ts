@@ -200,11 +200,29 @@ async function clipsFromUrl(url: string): Promise<BrollClip[]> {
 
 async function loadBrollClips(body: Record<string, unknown>) {
   const inlineClips = clipsFromPayload(body);
-  if (inlineClips.length) return inlineClips;
-
   const url = typeof body.brollMetadataUrl === 'string' ? body.brollMetadataUrl : process.env.BROLL_METADATA_URL;
-  if (!url) return [];
-  return clipsFromUrl(url);
+  if (!url) return inlineClips;
+
+  const remoteClips = await clipsFromUrl(url);
+  if (!inlineClips.length) return remoteClips;
+
+  const seen = new Set<string>();
+  return [...inlineClips, ...remoteClips].filter((clip) => {
+    const key = String(
+      clip.clip_id ||
+      clip.id ||
+      clip.drive_file_id ||
+      clip.url ||
+      clip.u ||
+      clip.direct_url ||
+      clip.download_url ||
+      '',
+    ).trim();
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function enqueueRender<T>(task: () => Promise<T>) {

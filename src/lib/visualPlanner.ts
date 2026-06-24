@@ -65,6 +65,7 @@ export type PlannedVisualScene = {
   selectedClip?: SelectedBrollClip;
   chartPayload?: ChartPayload;
   chartType?: ChartType;
+  fallbackStyle?: 'bank_app_mockup' | 'document_audit' | 'character_card' | 'checklist' | 'receipt_breakdown' | 'text_interrupt';
   fallbackTitle?: string;
   fallbackKicker?: string;
   fallbackText?: string;
@@ -274,6 +275,8 @@ function stripWorkflowAnnotations(value = '') {
   return value
     .replace(/\|\s*v\d+_[a-z0-9_ -]+=[^|]+/gi, ' ')
     .replace(/\b(?:bill zoom[- ]?in|free money tool|source card|visual intent|b-roll query|chart payload|lower third|cta):\s*/gi, ' ')
+    .replace(/\b(?:grocery inflation|the trap|general|debt\/stress|debt stress|real payment stack|bill checkpoint|payday|credit card debt|medical bills?|healthcare bills?|banking and savings|budgeting and monthly bills|car repair and transportation costs|subscriptions and app charges|income and paycheck):\s*/gi, ' ')
+    .replace(/\s+—\s*b-roll\s+for\b.*$/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -452,6 +455,16 @@ function visualRequirementGroups(sceneText: string, intent: SceneIntent): Visual
     };
   }
 
+  if (isBankingOverdraftBeat(sceneText)) {
+    return {
+      action: ['check', 'tap', 'decline', 'pay', 'transfer', 'deposit'],
+      object: ['debit card', 'bank app', 'phone', 'balance', 'statement', 'alert', 'card'],
+      location: ['checkout', 'store', 'gas pump', 'desk', 'home'],
+      strict: true,
+      reason: 'banking beat requires card/app/balance visuals',
+    };
+  }
+
   if (isGroceryBeat(sceneText)) {
     return {
       action: ['shop', 'checkout', 'scan', 'compare', 'pay', 'read'],
@@ -459,16 +472,6 @@ function visualRequirementGroups(sceneText: string, intent: SceneIntent): Visual
       location: ['grocery', 'supermarket', 'store', 'checkout', 'aisle', 'shelf'],
       strict: true,
       reason: 'grocery beat requires store/receipt/price visuals',
-    };
-  }
-
-  if (/\b(overdraft|debit|declined|pending|bank app|balance|checking|savings|deposit)\b/i.test(sceneText)) {
-    return {
-      action: ['check', 'tap', 'decline', 'pay', 'transfer', 'deposit'],
-      object: ['debit card', 'bank app', 'phone', 'balance', 'statement', 'alert', 'card'],
-      location: ['checkout', 'store', 'gas pump', 'desk', 'home'],
-      strict: true,
-      reason: 'banking beat requires card/app/balance visuals',
     };
   }
 
@@ -541,7 +544,14 @@ export function inferSceneIntent(scene: VideoPlanSceneInput): SceneIntent {
     /\b(car|auto|vehicle|dealership|loan|keys)\b/i.test(text);
 
   const medicalProfile = intentProfiles.find((profile) => profile.label === 'healthcare and medical bills') || winner;
-  const profile = isPaperwork ? intentProfiles[2] : (isMedicalBeat(text) ? medicalProfile : winner);
+  const bankingProfile = intentProfiles.find((profile) => profile.label === 'overdraft fee and debit card decline') || winner;
+  const profile = isPaperwork
+    ? intentProfiles[2]
+    : isMedicalBeat(text)
+      ? medicalProfile
+      : isBankingOverdraftBeat(text)
+        ? bankingProfile
+        : winner;
   const highSignalTokens = unique(tokens.filter((token) => token.length > 3)).slice(0, 10);
   const desiredTerms = unique([...profile.desiredTerms, ...highSignalTokens.slice(0, 6)]);
   const forbiddenTerms = unique(profile.forbiddenTerms || []);
@@ -684,8 +694,8 @@ function humanVisualIntent(scene: VideoPlanSceneInput, intent: SceneIntent) {
   const text = safeText(scene);
   if (/\b(sign|signed|signing|paperwork|contract|documents?)\b/i.test(text)) return 'Show the paperwork, signature, and decision point.';
   if (isMedicalBeat(text)) return 'Show the medical bill, paperwork, clinic, or billing call.';
+  if (isBankingOverdraftBeat(text)) return 'Show the card, bank app, balance, pending charge, or declined payment moment.';
   if (isGroceryBeat(text)) return 'Show the receipt, price tag, or grocery checkout detail.';
-  if (/\boverdraft|declined|pending|low balance|bank app\b/i.test(text)) return 'Show the card, bank app, balance, or declined payment moment.';
   if (isCarBeat(text)) return 'Show the car payment, dealership paperwork, or transportation cost.';
   if (/\bsave|buffer|emergency\b/i.test(text)) return 'Show the savings buffer or relief moment.';
   return `Show the specific money decision: ${intent.query}`.slice(0, 120);
@@ -696,6 +706,9 @@ function hasNumbers(text: string) {
 }
 
 function isGroceryBeat(text: string) {
+  if (isBankingOverdraftBeat(text) && !/\b(grocery|groceries|supermarket|unit price|per ounce|ounces?|shrinkflation|store brand|cereal|bakery|produce|store aisle)\b/i.test(text)) {
+    return false;
+  }
   return /\b(grocery|groceries|supermarket|checkout|receipt|shelf|unit price|per ounce|ounces?|package|shrinkflation|store brand|food price|cart|cereal|bakery|produce|store aisle)\b/i.test(text);
 }
 
@@ -704,8 +717,13 @@ function isMedicalBeat(text: string) {
     (/\binsurance\b/i.test(text) && /\b(card|copay|bill|invoice|doctor|hospital|medical|healthcare|eob|patient|clinic)\b/i.test(text));
 }
 
+function isBankingOverdraftBeat(text: string) {
+  return /\b(overdraft|debit|declined|pending|bank app|checking account|checking balance|low balance|bank balance|bank says|owe them|payment queue|transaction|transactions|reordered|largest to smallest|posted|settled|electric bill|subscription app charge|real balance|tracker|mental zero|fee cycle)\b/i.test(text);
+}
+
 function isCarBeat(text: string) {
   if (isMedicalBeat(text)) return false;
+  if (isBankingOverdraftBeat(text)) return false;
   return /\b(car|vehicle|dealership|dealer|auto loan|mechanic|repair|gas pump|gas station|maintenance)\b/i.test(text) ||
     (/\binsurance\b/i.test(text) && /\b(car|vehicle|auto|driver|dealer|dealership|gas|maintenance|repair)\b/i.test(text));
 }
@@ -723,22 +741,73 @@ function chooseChartType(scene: VideoPlanSceneInput, intent: SceneIntent, previo
   const text = safeText(scene);
   const preferred = [...intent.chartTypes];
   if (isMedicalBeat(text)) preferred.unshift('statement_breakdown', 'fee_explosion');
+  if (isBankingOverdraftBeat(text)) preferred.unshift('fee_explosion', 'before_after_cashflow', 'statement_breakdown');
   if (/\b(apr|interest|compound|years?|months?)\b/i.test(text)) preferred.unshift('interest_trap_timeline');
   if (/\b(statement|minimum|due date|balance)\b/i.test(text)) preferred.unshift('statement_breakdown');
   if (/\b(fee|late|overdraft|penalty|add on|addon)\b/i.test(text)) preferred.unshift('fee_explosion');
   if (/\b(before|after|instead|switch|save|savings)\b/i.test(text)) preferred.unshift('before_after_cashflow');
+  if (/\b(real balance|tracker|mental zero|buffer|shield)\b/i.test(text)) preferred.unshift('before_after_cashflow');
   if (!isMedicalBeat(text) && /\b(monthly|payment|insurance|gas|rent|budget)\b/i.test(text)) preferred.unshift('payment_stack');
 
   const uniquePreferred = unique(preferred.filter((type) => chartTypes.includes(type)));
   return uniquePreferred.find((type) => type !== previousChartType) || uniquePreferred[0] || 'payment_stack';
 }
 
+const numberWords: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+  fifteen: 15,
+  sixteen: 16,
+  seventeen: 17,
+  eighteen: 18,
+  nineteen: 19,
+  twenty: 20,
+  thirty: 30,
+  forty: 40,
+  fifty: 50,
+  sixty: 60,
+  seventy: 70,
+  eighty: 80,
+  ninety: 90,
+};
+
+function valueFromNumberWords(value = '') {
+  const tokens = normalizeText(value).split(' ').filter(Boolean);
+  let total = 0;
+  let current = 0;
+  for (const token of tokens) {
+    if (token === 'hundred') {
+      current = Math.max(1, current) * 100;
+      continue;
+    }
+    const amount = numberWords[token];
+    if (amount) current += amount;
+  }
+  total += current;
+  return total > 0 ? total : 0;
+}
+
 function extractMoneyValues(text: string) {
-  const matches = Array.from(text.matchAll(/\$?\b(\d{1,3}(?:,\d{3})+|\d{2,6})\b/g))
+  const digitMatches = Array.from(text.matchAll(/\$?\b(\d{1,3}(?:,\d{3})+|\d{2,6})\b/g))
     .map((match) => Number(match[1].replace(/,/g, '')))
     .filter((value) => Number.isFinite(value) && value > 0)
     .slice(0, 5);
-  return matches.length ? matches : [];
+  const wordMatches = Array.from(text.matchAll(/\b((?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)(?:[-\s]+(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred))*)\s+(?:dollars?|bucks?|fees?|purchases?|charges?|bill|balance|latte|coffee)\b/gi))
+    .map((match) => valueFromNumberWords(match[1]))
+    .filter((value) => value > 0);
+  return unique([...digitMatches, ...wordMatches]).slice(0, 6);
 }
 
 function extractDollarValues(text: string) {
@@ -790,6 +859,35 @@ function chartValuesFor(scene: VideoPlanSceneInput, chartType: ChartType) {
       { label: 'Unit price', amount: values[1] || 50 },
       { label: 'Weekly cart', amount: values[2] || 140 },
       { label: 'Possible savings', amount: values[3] || 40 },
+    ];
+  }
+  if (isBankingOverdraftBeat(text)) {
+    const balance = values.find((value) => value === 50 || value === 80) || values[0] || 50;
+    const electricBill = values.find((value) => value === 90) || values.find((value) => value >= 70 && value <= 160) || 90;
+    const smallPurchase = values.find((value) => value <= 15) || 7;
+    const feeEach = values.find((value) => value === 35) || 35;
+    const totalFees = values.find((value) => value === 105) || feeEach * 3;
+    if (chartType === 'fee_explosion') {
+      return [
+        { label: 'Coffee', amount: smallPurchase },
+        { label: 'Fee 1', amount: feeEach },
+        { label: 'Fee 2', amount: feeEach },
+        { label: 'Fee 3', amount: feeEach },
+        { label: 'Total fees', amount: totalFees },
+      ];
+    }
+    if (chartType === 'before_after_cashflow') {
+      return [
+        { label: 'App balance', amount: balance },
+        { label: 'Real buffer', amount: Math.min(50, balance) },
+        { label: 'Fee avoided', amount: totalFees },
+      ];
+    }
+    return [
+      { label: 'Starting balance', amount: balance },
+      { label: 'Electric bill', amount: electricBill },
+      { label: 'Coffee', amount: smallPurchase },
+      { label: 'Overdraft fees', amount: totalFees },
     ];
   }
   if (chartType === 'interest_trap_timeline') {
@@ -853,9 +951,10 @@ function shortTitle(scene: VideoPlanSceneInput, chartType: ChartType) {
     if (/\b(shrinkflation|package|smaller|less)\b/i.test(text)) return 'Shrinkflation Hides Here';
     return 'The Grocery Price Trap';
   }
-  if (/\b(overdraft|declined|pending|low balance|bank app|debit)\b/i.test(text)) {
+  if (isBankingOverdraftBeat(text)) {
     if (chartType === 'fee_explosion') return 'When The Fee Hits';
     if (chartType === 'before_after_cashflow') return 'The Buffer That Stops The Fee';
+    if (/\breorder|largest to smallest|payment queue|pending|posted|settled/i.test(text)) return 'The Transaction Order Trap';
     return 'Why The Balance Was Wrong';
   }
   if (chartType === 'interest_trap_timeline') return 'The Cost Grows Over Time';
@@ -914,6 +1013,7 @@ function makeTextFallback(scene: VideoPlanSceneInput, intent: SceneIntent, usedF
   const text = safeText(scene);
   const fingerprint = `text:idx${scene.sceneIndex || 0}:${intent.label}:${text.slice(0, 48)}`;
   const fallbackTitle = fallbackTitleFor(scene, intent);
+  const fallbackStyle = fallbackStyleFor(scene, intent) || 'text_interrupt';
   usedFingerprints.add(fingerprint);
   return {
     sceneIndex: scene.sceneIndex || 0,
@@ -923,6 +1023,7 @@ function makeTextFallback(scene: VideoPlanSceneInput, intent: SceneIntent, usedF
     visualType: 'text' as const,
     visualIntent: humanVisualIntent(scene, intent),
     brollQuery: intent.query,
+    fallbackStyle,
     fallbackTitle,
     fallbackKicker: kickerFor(text),
     fallbackText: conciseBeat(scene),
@@ -931,7 +1032,7 @@ function makeTextFallback(scene: VideoPlanSceneInput, intent: SceneIntent, usedF
     relevanceScore: 0,
     qa: {
       duplicate: false,
-      reason: 'No b-roll clip reached the minimum relevance score; use editorial text/graphics fallback.',
+      reason: `No b-roll clip reached the minimum relevance score; use ${fallbackStyle.replace(/_/g, ' ')} editorial fallback.`,
       warnings: ['broll_not_relevant_enough'],
     },
   };
@@ -1012,6 +1113,18 @@ function kickerFor(text: string) {
   return 'Why It Matters';
 }
 
+function fallbackStyleFor(scene: VideoPlanSceneInput, intent: SceneIntent): PlannedVisualScene['fallbackStyle'] {
+  const text = safeText(scene);
+  if (/\b(meet|dana|marcus|david|lisa|nurse|teacher|driver|single mom|single dad)\b/i.test(text)) return 'character_card';
+  if (isBankingOverdraftBeat(text)) return 'bank_app_mockup';
+  if (/\b(statement|bill|invoice|paperwork|contract|documents?|ledger|tracker|log it|circle every fee)\b/i.test(text)) return 'document_audit';
+  if (/\b(first|second|third|three moves|strategy|checklist|steps?)\b/i.test(text)) return 'checklist';
+  if (isGroceryBeat(text)) return 'receipt_breakdown';
+  if (isMedicalBeat(text)) return 'document_audit';
+  if (intent.label.includes('budget') || intent.label.includes('credit')) return 'document_audit';
+  return 'text_interrupt';
+}
+
 function subtitleForScene(scene: VideoPlanSceneInput, intent: SceneIntent) {
   const text = safeText(scene);
   if (isMedicalBeat(text)) {
@@ -1022,11 +1135,11 @@ function subtitleForScene(scene: VideoPlanSceneInput, intent: SceneIntent) {
   }
   if (isCarBeat(text) && /\b(insurance|gas|maintenance|payment|fees|monthly)\b/i.test(text)) return 'The payment is only one piece.';
   if (/\b(chargemaster|uninsured|underinsured)\b/i.test(text)) return 'The sticker price is not the final price.';
-  if (/\b(itemized|billing department|call|phone)\b/i.test(text)) return 'Use the bill against itself.';
+  if (/\b(itemized|billing department|call)\b/i.test(text)) return 'Use the bill against itself.';
   if (/\b(eob|insurer)\b/i.test(text) || (/\binsurance\b/i.test(text) && /\b(hospital|medical|doctor|copay|healthcare|bill)\b/i.test(text))) return 'Compare what they billed to what insurance says.';
   if (/\b(sign|signed|signing|paperwork|contract)\b/i.test(text)) return 'The details are in the document.';
   if (isGroceryBeat(text)) return 'The receipt tells the truth.';
-  if (/\boverdraft|declined|pending|low balance\b/i.test(text)) return 'The fee starts before it posts.';
+  if (isBankingOverdraftBeat(text)) return 'The fee starts before it posts.';
   if (/\bsave|buffer|emergency\b/i.test(text)) return 'The buffer changes the outcome.';
   if (intent.label.includes('budget')) return 'The monthly number is only the beginning.';
   return 'Follow the money in this moment.';
@@ -1034,6 +1147,8 @@ function subtitleForScene(scene: VideoPlanSceneInput, intent: SceneIntent) {
 
 function fallbackTitleFor(scene: VideoPlanSceneInput, intent: SceneIntent) {
   const text = safeText(scene);
+  const characterIntro = text.match(/\bMeet\s+([A-Z][a-z]+)\b/);
+  if (characterIntro) return `Meet ${characterIntro[1]}`;
   if (isMedicalBeat(text)) {
     if (/\b(chargemaster|uninsured|underinsured)\b/i.test(text)) return 'The Hospital Price Is Not The Final Price';
     if (/\b(itemized|billing department|call|phone)\b/i.test(text)) return 'Call Billing Before You Pay';
@@ -1042,13 +1157,14 @@ function fallbackTitleFor(scene: VideoPlanSceneInput, intent: SceneIntent) {
   }
   if (isCarBeat(text) && /\b(insurance|gas|maintenance|fees|real cost|payment)\b/i.test(text)) return 'The Payment Is Not The Price';
   if (/\b(chargemaster|uninsured|underinsured)\b/i.test(text)) return 'The Hospital Price Is Not The Final Price';
-  if (/\b(itemized|billing department|call|phone)\b/i.test(text)) return 'Call Billing Before You Pay';
+  if (/\b(itemized|billing department|call)\b/i.test(text)) return 'Call Billing Before You Pay';
   if (/\b(eob|insurer)\b/i.test(text) || (/\binsurance\b/i.test(text) && /\b(hospital|medical|doctor|copay|healthcare|bill)\b/i.test(text))) return 'Compare The Bill To The EOB';
   if (/\b(er|emergency room|medical bill|hospital bill|trauma activation)\b/i.test(text)) return 'The Bill Is An Opening Offer';
   if (isGroceryBeat(text) && /\b(unit price|per ounce|ounces?|oz)\b/i.test(text)) return 'Check The Unit Price';
   if (isGroceryBeat(text) && /\b(shrinkflation|package|smaller|less)\b/i.test(text)) return 'Shrinkflation Hides In The Package';
   if (isGroceryBeat(text)) return 'The Receipt Shows The Real Price';
-  if (/\boverdraft|declined|pending\b/i.test(text)) return 'The Fee Was Set Up Before It Hit';
+  if (isBankingOverdraftBeat(text) && /\breorder|largest to smallest|payment queue|pending|posted|settled/i.test(text)) return 'The Bank Controls The Order';
+  if (isBankingOverdraftBeat(text)) return 'The Fee Was Set Up Before It Hit';
   if (/\bbalance|bank app|alert\b/i.test(text)) return 'The App Is Not The Whole Story';
   if (/\bsave|buffer|emergency\b/i.test(text)) return 'Build A Buffer Before The Fee';
   if (/\bpaperwork|contract|sign\b/i.test(text)) return 'The Paperwork Hides The Real Cost';
@@ -1165,6 +1281,7 @@ export function planVideoVisuals(
       query: scene.brollQuery || scene.visualIntent,
       fingerprint: scene.visualFingerprint,
       visualIntent: scene.visualIntent,
+      fallbackStyle: scene.fallbackStyle,
       title: scene.chartPayload?.title || scene.fallbackTitle,
       subtitle: scene.chartPayload?.subtitle || scene.fallbackKicker,
       visibleText: scene.fallbackText || scene.chartPayload?.voiceoverBeat,

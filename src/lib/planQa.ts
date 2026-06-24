@@ -5,6 +5,7 @@ export type VisualPlanScene = {
   sceneIndex?: number;
   visualType?: 'chart' | 'broll' | 'image' | 'text';
   chartType?: ChartType | string;
+  fallbackStyle?: string;
   assetUrl?: string;
   providerId?: string;
   query?: string;
@@ -61,8 +62,10 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
   const queryCounts = new Map<string, number>();
   let previousChartType = '';
   let chartTotal = 0;
-  let textFallbackTotal = 0;
-  let textFallbackStreak = 0;
+  let plainTextFallbackTotal = 0;
+  let structuredTextFallbackTotal = 0;
+  let plainTextFallbackStreak = 0;
+  let previousFallbackStyle = '';
 
   scenes.forEach((scene, index) => {
     const sceneIndex = scene.sceneIndex ?? index + 1;
@@ -87,9 +90,16 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
     }
 
     if (scene.visualType === 'text') {
-      textFallbackTotal += 1;
-      textFallbackStreak += 1;
-      if (textFallbackStreak > 2) {
+      const fallbackStyle = String(scene.fallbackStyle || 'plain_text').trim();
+      const isStructuredFallback = !['plain_text', 'text', 'text_interrupt'].includes(fallbackStyle);
+      if (isStructuredFallback) {
+        structuredTextFallbackTotal += 1;
+        plainTextFallbackStreak = 0;
+      } else {
+        plainTextFallbackTotal += 1;
+        plainTextFallbackStreak += 1;
+      }
+      if (!isStructuredFallback && plainTextFallbackStreak > 2) {
         violations.push({
           level: 'error',
           code: 'TEXT_FALLBACK_STREAK',
@@ -97,8 +107,18 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
           message: 'More than two fallback text cards appear back-to-back. Use b-roll or a finance graphic.',
         });
       }
+      if (isStructuredFallback && previousFallbackStyle === fallbackStyle) {
+        violations.push({
+          level: 'warning',
+          code: 'STRUCTURED_FALLBACK_REPEAT',
+          sceneIndex,
+          message: `Structured fallback style "${fallbackStyle}" repeats back-to-back.`,
+        });
+      }
+      previousFallbackStyle = fallbackStyle;
     } else {
-      textFallbackStreak = 0;
+      plainTextFallbackStreak = 0;
+      previousFallbackStyle = '';
     }
 
     if (scene.visualType === 'chart' || scene.chartType) {
@@ -149,12 +169,20 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
     }
   }
 
-  const maxTextFallbacks = Math.max(2, Math.ceil(scenes.length * 0.35));
-  if (textFallbackTotal > maxTextFallbacks) {
+  const maxTextFallbacks = Math.max(2, Math.ceil(scenes.length * 0.25));
+  if (plainTextFallbackTotal > maxTextFallbacks) {
     violations.push({
       level: 'error',
       code: 'TEXT_FALLBACK_OVERUSED',
-      message: `Fallback text cards appear ${textFallbackTotal} times; limit is ${maxTextFallbacks}. Use matched b-roll or Remotion graphics.`,
+      message: `Plain text fallback cards appear ${plainTextFallbackTotal} times; limit is ${maxTextFallbacks}. Use matched b-roll or Remotion graphics.`,
+    });
+  }
+
+  if (structuredTextFallbackTotal > Math.ceil(scenes.length * 0.6)) {
+    violations.push({
+      level: 'warning',
+      code: 'STRUCTURED_FALLBACK_HEAVY',
+      message: `Structured finance fallbacks appear ${structuredTextFallbackTotal} times. This can render, but add more B-roll candidates for a more premium edit.`,
     });
   }
 
