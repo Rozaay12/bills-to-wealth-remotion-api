@@ -50,6 +50,7 @@ export type VideoPlanOptions = {
   targetChartCount?: number;
   maxGenericScreenClips?: number;
   minBrollScore?: number;
+  minRescueBrollScore?: number;
   maxClipRepeats?: number;
 };
 
@@ -64,6 +65,10 @@ export type PlannedVisualScene = {
   selectedClip?: SelectedBrollClip;
   chartPayload?: ChartPayload;
   chartType?: ChartType;
+  fallbackTitle?: string;
+  fallbackKicker?: string;
+  fallbackText?: string;
+  suppressCaptions?: boolean;
   visualFingerprint: string;
   relevanceScore: number;
   qa: {
@@ -110,7 +115,19 @@ type SceneIntent = {
 
 const QUALITY_FALLBACK = 6.5;
 const MIN_BROLL_SCORE = 14;
+const MIN_RESCUE_BROLL_SCORE = 9;
 const DEFAULT_TARGET_CHARTS = 5;
+
+const backendLabelReplacements: Record<string, string> = {
+  budget_pressure: 'monthly budget pressure',
+  generic_debt: 'debt pressure',
+  generic_savings: 'savings buffer',
+  generic_credit: 'credit pressure',
+  generic_budget: 'monthly budget',
+  visual_intent: '',
+  broll_query: '',
+  chart_payload: '',
+};
 
 const stopWords = new Set([
   'about', 'after', 'again', 'also', 'because', 'before', 'being', 'between', 'could',
@@ -122,6 +139,14 @@ const stopWords = new Set([
 ]);
 
 const intentProfiles: IntentProfile[] = [
+  {
+    label: 'overdraft fee and debit card decline',
+    categories: ['02_savings_banking', '18_budgeting_bank_app', '01_debt_credit_cards', '13_grocery_shopping'],
+    keywords: ['overdraft', 'fee', 'debit', 'declined', 'pending', 'gas', 'pump', 'checkout', 'balance', 'alert', 'banking'],
+    desiredTerms: ['debit card', 'bank app', 'balance', 'overdraft fee', 'pending charge', 'checkout', 'receipt', 'low balance alert'],
+    forbiddenTerms: ['repair', 'mechanic', 'tire', 'wheel', 'hood', 'jack', 'oil', 'garage', 'tools'],
+    chartTypes: ['fee_explosion', 'statement_breakdown', 'before_after_cashflow'],
+  },
   {
     label: 'dealership paperwork and loan signing',
     categories: ['01_debt_credit_cards', '04_budgeting', '07_income_paycheck', '14_car_repair'],
@@ -227,6 +252,43 @@ const unique = <T>(items: T[]) => Array.from(new Set(items));
 const firstText = (...values: Array<string | null | undefined>) =>
   values.find((value) => typeof value === 'string' && value.trim().length > 0)?.trim() || '';
 
+const titleCase = (value = '') =>
+  value
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+
+export function hasInternalVisibleLabel(value = '') {
+  const normalized = value.toLowerCase();
+  if (/\b(?:budget_pressure|generic_debt|generic_savings|generic_credit|generic_budget|visual_intent|broll_query|chart_payload)\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b[a-z]+_[a-z0-9_]+\b/.test(value)) return true;
+  if (/\s+#\d+\b/.test(value)) return true;
+  return false;
+}
+
+export function cleanVisibleText(value = '', fallback = '') {
+  let cleaned = String(value || '');
+  for (const [token, replacement] of Object.entries(backendLabelReplacements)) {
+    cleaned = cleaned.replace(new RegExp(`\\b${token}\\b`, 'gi'), replacement);
+  }
+  cleaned = cleaned
+    .replace(/\s+#\d+\b/g, '')
+    .replace(/\b([a-z]+(?:_[a-z0-9]+)+)\b/g, (_match, token: string) => titleCase(token))
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || fallback;
+}
+
+function isOnlyBackendHint(value = '') {
+  const normalized = value.trim();
+  if (!normalized) return false;
+  if (backendLabelReplacements[normalized.toLowerCase()]) return true;
+  return /^[a-z0-9_ -]+#?\d*$/i.test(normalized) && hasInternalVisibleLabel(normalized);
+}
+
 function clipUrl(clip: BrollClip) {
   return firstText(clip.url, clip.u, clip.direct_url, clip.download_url);
 }
@@ -267,17 +329,25 @@ function rawQualityFor(clip: BrollClip) {
   return null;
 }
 
-const safeText = (scene: VideoPlanSceneInput) =>
-  [
-    scene.visualIntent,
+const safeText = (scene: VideoPlanSceneInput) => {
+  const visible = [
     scene.narration,
     scene.voiceoverBeat,
     scene.voiceoverText,
     scene.text,
+    isOnlyBackendHint(scene.visualIntent || '') ? '' : scene.visualIntent,
   ]
     .filter(Boolean)
+    .map((value) => cleanVisibleText(String(value)))
+    .filter(Boolean)
     .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
     .slice(0, 1200);
+
+  if (visible) return visible;
+  return cleanVisibleText(scene.visualIntent || '', 'Money decision');
+};
 
 function countMatches(text: string, terms: string[]) {
   const normalized = normalizeText(text);
@@ -445,6 +515,12 @@ function selectBrollClip(
   };
 }
 
+function conciseBeat(scene: VideoPlanSceneInput) {
+  const text = safeText(scene);
+  const firstSentence = text.split(/(?<=[.!?])\s+/)[0] || text;
+  return cleanVisibleText(firstSentence).slice(0, 140);
+}
+
 function hasNumbers(text: string) {
   return /(\$|\b\d+%|\bapr\b|\binterest\b|\bfee\b|\bpayment\b|\bmonthly\b|\bbalance\b)/i.test(text);
 }
@@ -523,6 +599,11 @@ function chartValuesFor(scene: VideoPlanSceneInput, chartType: ChartType) {
 
 function shortTitle(scene: VideoPlanSceneInput, chartType: ChartType) {
   const text = safeText(scene);
+  if (/\b(overdraft|declined|pending|low balance|bank app|debit)\b/i.test(text)) {
+    if (chartType === 'fee_explosion') return 'When The Fee Hits';
+    if (chartType === 'before_after_cashflow') return 'The Buffer That Stops The Fee';
+    return 'Why The Balance Was Wrong';
+  }
   if (chartType === 'interest_trap_timeline') return 'The Cost Grows Over Time';
   if (chartType === 'statement_breakdown') return 'The Statement Shows The Trap';
   if (chartType === 'fee_explosion') return 'Small Fees Become Real Money';
@@ -536,11 +617,11 @@ function buildChartPayload(scene: VideoPlanSceneInput, intent: SceneIntent, char
   return {
     chartType,
     title: shortTitle(scene, chartType),
-    subtitle: intent.label,
+    subtitle: titleCase(intent.label),
     values: chartValuesFor(scene, chartType),
     duration: Math.max(4, Math.min(7, Math.round(scene.duration || 5))),
     sceneId: scene.sceneId || `scene-${scene.sceneIndex || 0}`,
-    voiceoverBeat: safeText(scene).slice(0, 240),
+    voiceoverBeat: conciseBeat(scene),
     style: 'bills_to_wealth_hmw',
     emphasis: chartType === 'fee_explosion' ? 'Watch the fees' : 'Follow the money',
   };
@@ -570,6 +651,7 @@ function chooseChartSceneIndexes(scenes: VideoPlanSceneInput[], targetChartCount
 function makeTextFallback(scene: VideoPlanSceneInput, intent: SceneIntent, usedFingerprints: Set<string>) {
   const text = safeText(scene);
   const fingerprint = `text:${scene.sceneIndex || 0}:${intent.label}:${text.slice(0, 48)}`;
+  const fallbackTitle = fallbackTitleFor(scene, intent);
   usedFingerprints.add(fingerprint);
   return {
     sceneIndex: scene.sceneIndex || 0,
@@ -579,6 +661,10 @@ function makeTextFallback(scene: VideoPlanSceneInput, intent: SceneIntent, usedF
     visualType: 'text' as const,
     visualIntent: intent.label,
     brollQuery: intent.query,
+    fallbackTitle,
+    fallbackKicker: kickerFor(text),
+    fallbackText: conciseBeat(scene),
+    suppressCaptions: false,
     visualFingerprint: fingerprint,
     relevanceScore: 0,
     qa: {
@@ -589,6 +675,22 @@ function makeTextFallback(scene: VideoPlanSceneInput, intent: SceneIntent, usedF
   };
 }
 
+function kickerFor(text: string) {
+  if (/\boverdraft|fee|penalty|declined\b/i.test(text)) return 'Real Cost';
+  if (/\bsave|buffer|emergency\b/i.test(text)) return 'Move Two';
+  if (/\bwatch|pay attention|hidden|trap\b/i.test(text)) return 'Pay Attention';
+  return 'Why It Matters';
+}
+
+function fallbackTitleFor(scene: VideoPlanSceneInput, intent: SceneIntent) {
+  const text = safeText(scene);
+  if (/\boverdraft|declined|pending\b/i.test(text)) return 'The Fee Was Set Up Before It Hit';
+  if (/\bbalance|bank app|alert\b/i.test(text)) return 'The App Is Not The Whole Story';
+  if (/\bsave|buffer|emergency\b/i.test(text)) return 'Build A Buffer Before The Fee';
+  if (/\bpaperwork|contract|sign\b/i.test(text)) return 'The Paperwork Hides The Real Cost';
+  return titleCase(intent.label);
+}
+
 export function planVideoVisuals(
   scenes: VideoPlanSceneInput[],
   clips: BrollClip[],
@@ -596,6 +698,7 @@ export function planVideoVisuals(
 ) {
   const targetChartCount = Math.max(0, Math.min(12, options.targetChartCount ?? DEFAULT_TARGET_CHARTS));
   const minBrollScore = options.minBrollScore ?? MIN_BROLL_SCORE;
+  const minRescueBrollScore = options.minRescueBrollScore ?? MIN_RESCUE_BROLL_SCORE;
   const chartIndexes = chooseChartSceneIndexes(scenes, targetChartCount);
   const usedFingerprints = new Set<string>();
   const planned: PlannedVisualScene[] = [];
@@ -626,6 +729,7 @@ export function planVideoVisuals(
         visualIntent: intent.label,
         chartPayload,
         chartType,
+        suppressCaptions: true,
         visualFingerprint,
         relevanceScore: 1,
         qa: {
@@ -642,12 +746,13 @@ export function planVideoVisuals(
       ? normalizedScene.candidates
       : clips;
     const selectedClip = selectBrollClip(sceneClips, intent, usedFingerprints, minBrollScore);
-    if (!selectedClip) {
+    const rescueClip = selectedClip || selectBrollClip(sceneClips, intent, usedFingerprints, minRescueBrollScore);
+    if (!rescueClip) {
       planned.push(makeTextFallback(normalizedScene, intent, usedFingerprints));
       return;
     }
 
-    const visualFingerprint = selectedClip.clipId;
+    const visualFingerprint = rescueClip.clipId;
     usedFingerprints.add(visualFingerprint);
     planned.push({
       sceneIndex,
@@ -657,19 +762,21 @@ export function planVideoVisuals(
       visualType: 'broll',
       visualIntent: intent.label,
       brollQuery: intent.query,
-      selectedClip,
+      selectedClip: rescueClip,
       visualFingerprint,
-      relevanceScore: Number((selectedClip.score / 50).toFixed(2)),
+      relevanceScore: Number((rescueClip.score / 50).toFixed(2)),
       qa: {
         duplicate: false,
-        reason: `Matched ${selectedClip.category} using intent terms: ${intent.desiredTerms.slice(0, 5).join(', ')}.`,
-        warnings: (selectedClip as SelectedBrollClip & { warnings?: string[] }).warnings || [],
+        reason: `Matched ${rescueClip.category} using intent terms: ${intent.desiredTerms.slice(0, 5).join(', ')}.`,
+        warnings: [
+          ...((rescueClip as SelectedBrollClip & { warnings?: string[] }).warnings || []),
+          ...(selectedClip ? [] : ['rescue_broll_used_to_avoid_placeholder_card']),
+        ],
       },
     });
   });
 
   const qaInput: VisualPlanScene[] = planned
-    .filter((scene) => scene.visualType === 'broll' || scene.visualType === 'chart')
     .map((scene) => ({
       sceneIndex: scene.sceneIndex,
       visualType: scene.visualType,
@@ -678,6 +785,10 @@ export function planVideoVisuals(
       providerId: scene.selectedClip?.clipId,
       query: scene.brollQuery || scene.visualIntent,
       fingerprint: scene.visualFingerprint,
+      visualIntent: scene.visualIntent,
+      title: scene.chartPayload?.title || scene.fallbackTitle,
+      subtitle: scene.chartPayload?.subtitle || scene.fallbackKicker,
+      visibleText: scene.fallbackText || scene.chartPayload?.voiceoverBeat,
     }));
   const qa = validateVisualPlan(qaInput);
   const brollCount = planned.filter((scene) => scene.visualType === 'broll').length;
@@ -686,7 +797,7 @@ export function planVideoVisuals(
 
   return {
     ok: qa.ok,
-    version: 'v61_visual_architecture',
+    version: 'v62_priority_upgrade_guardrails',
     summary: {
       scenes: planned.length,
       brollCount,

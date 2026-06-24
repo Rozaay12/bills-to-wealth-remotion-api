@@ -31,7 +31,17 @@ const money = (value: number) => {
   return `${prefix}$${Math.round(abs).toLocaleString('en-US')}`;
 };
 
-const clean = (value = '') => value.replace(/\s+/g, ' ').trim();
+const clean = (value = '') =>
+  value
+    .replace(/\b(?:budget_pressure|generic_debt|generic_savings|generic_credit|generic_budget|visual_intent|broll_query|chart_payload)\b/gi, '')
+    .replace(/\s+#\d+\b/g, '')
+    .replace(/\b([a-z]+(?:_[a-z0-9]+)+)\b/g, (_match, token: string) =>
+      token
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, (char) => char.toUpperCase()),
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
 
 const progressFor = (frame: number, start: number, duration: number) =>
   interpolate(frame, [start, start + duration], [0, 1], {
@@ -43,6 +53,10 @@ const progressFor = (frame: number, start: number, duration: number) =>
 const Header: React.FC<{ title: string; subtitle?: string; emphasis?: string }> = ({ title, subtitle, emphasis }) => {
   const frame = useCurrentFrame();
   const entrance = progressFor(frame, 0, 18);
+  const displayTitle = clean(title) || 'The Real Cost';
+  const titleSize = displayTitle.length > 58 ? 36 : displayTitle.length > 42 ? 42 : 48;
+  const displaySubtitle = clean(subtitle);
+  const displayEmphasis = clean(emphasis);
   return (
     <div style={{ position: 'absolute', top: 54, left: 82, right: 82 }}>
       <div
@@ -58,7 +72,7 @@ const Header: React.FC<{ title: string; subtitle?: string; emphasis?: string }> 
         style={{
           marginTop: 24,
           fontFamily: 'Inter, Arial, sans-serif',
-          fontSize: 48,
+          fontSize: titleSize,
           lineHeight: 1.03,
           fontWeight: 750,
           letterSpacing: 0,
@@ -67,9 +81,9 @@ const Header: React.FC<{ title: string; subtitle?: string; emphasis?: string }> 
           maxWidth: 860,
         }}
       >
-        {clean(title)}
+        {displayTitle}
       </div>
-      {subtitle ? (
+      {displaySubtitle ? (
         <div
           style={{
             marginTop: 16,
@@ -80,10 +94,10 @@ const Header: React.FC<{ title: string; subtitle?: string; emphasis?: string }> 
             color: colors.muted,
           }}
         >
-          {clean(subtitle)}
+          {displaySubtitle}
         </div>
       ) : null}
-      {emphasis ? (
+      {displayEmphasis ? (
         <div
           style={{
             display: 'inline-flex',
@@ -97,7 +111,7 @@ const Header: React.FC<{ title: string; subtitle?: string; emphasis?: string }> 
             textTransform: 'uppercase',
           }}
         >
-          {clean(emphasis)}
+          {displayEmphasis}
         </div>
       ) : null}
     </div>
@@ -105,7 +119,8 @@ const Header: React.FC<{ title: string; subtitle?: string; emphasis?: string }> 
 };
 
 const BottomLine: React.FC<{ text?: string }> = ({ text }) => {
-  if (!text) return null;
+  const displayText = clean(text).slice(0, 150);
+  if (!displayText) return null;
   return (
     <div
       style={{
@@ -114,13 +129,13 @@ const BottomLine: React.FC<{ text?: string }> = ({ text }) => {
         right: 82,
         bottom: 58,
         fontFamily: 'Inter, Arial, sans-serif',
-        fontSize: 26,
+        fontSize: displayText.length > 110 ? 21 : 24,
         lineHeight: 1.15,
         color: colors.yellow,
         fontWeight: 800,
       }}
     >
-      {clean(text)}
+      {displayText}
     </div>
   );
 };
@@ -367,16 +382,22 @@ const FeeExplosion: React.FC<{ payload: ChartPayload }> = ({ payload }) => {
       </div>
       {payload.values.slice(0, 6).map((item, index) => {
         const reveal = spring({ frame: frame - 55 - index * 6, fps: 30, config: { damping: 14 } });
-        const angle = -150 + index * 60;
-        const x = Math.cos((angle * Math.PI) / 180) * 310;
-        const y = Math.sin((angle * Math.PI) / 180) * 120;
+        const positions = [
+          { left: 185, top: 470 },
+          { left: 390, top: 525 },
+          { left: 645, top: 540 },
+          { left: 895, top: 525 },
+          { left: 1095, top: 470 },
+          { left: 640, top: 430 },
+        ];
+        const position = positions[index] || positions[0];
         return (
           <div
             key={item.label}
             style={{
               position: 'absolute',
-              left: 555 + x * reveal,
-              top: 405 + y * reveal,
+              left: position.left,
+              top: position.top,
               padding: '10px 16px',
               background: palette[index % palette.length],
               color: index === 1 ? '#111827' : colors.text,
@@ -385,6 +406,9 @@ const FeeExplosion: React.FC<{ payload: ChartPayload }> = ({ payload }) => {
               fontSize: 19,
               opacity: reveal,
               textTransform: 'uppercase',
+              transform: `translate(-50%, -50%) scale(${0.94 + reveal * 0.06})`,
+              maxWidth: 230,
+              whiteSpace: 'nowrap',
             }}
           >
             {clean(item.label)} {money(item.amount)}

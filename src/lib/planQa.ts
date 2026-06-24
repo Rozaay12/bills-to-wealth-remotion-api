@@ -9,6 +9,10 @@ export type VisualPlanScene = {
   providerId?: string;
   query?: string;
   fingerprint?: string;
+  visualIntent?: string;
+  title?: string;
+  subtitle?: string;
+  visibleText?: string;
 };
 
 export type PlanViolation = {
@@ -29,6 +33,16 @@ const normalize = (value = '') =>
     .slice(0, 8)
     .join(' ');
 
+const hasInternalVisibleLabel = (value = '') => {
+  const normalized = value.toLowerCase();
+  if (/\b(?:budget_pressure|generic_debt|generic_savings|generic_credit|generic_budget|visual_intent|broll_query|chart_payload)\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b[a-z]+_[a-z0-9_]+\b/.test(value)) return true;
+  if (/\s+#\d+\b/.test(value)) return true;
+  return false;
+};
+
 export function fingerprintScene(scene: VisualPlanScene): string {
   if (scene.fingerprint) return normalize(scene.fingerprint);
   if (scene.providerId) return normalize(`${scene.visualType || ''}:${scene.providerId}`);
@@ -44,6 +58,8 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
   const queryCounts = new Map<string, number>();
   let previousChartType = '';
   let chartTotal = 0;
+  let textFallbackTotal = 0;
+  let textFallbackStreak = 0;
 
   scenes.forEach((scene, index) => {
     const sceneIndex = scene.sceneIndex ?? index + 1;
@@ -56,6 +72,31 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
 
     const query = normalize(scene.query || '');
     if (query) queryCounts.set(query, (queryCounts.get(query) || 0) + 1);
+
+    const visibleFields = [scene.visualIntent, scene.title, scene.subtitle, scene.visibleText].filter(Boolean).join(' ');
+    if (hasInternalVisibleLabel(visibleFields)) {
+      violations.push({
+        level: 'error',
+        code: 'INTERNAL_VISIBLE_TEXT',
+        sceneIndex,
+        message: `Scene contains backend/internal visible text: "${visibleFields.slice(0, 120)}".`,
+      });
+    }
+
+    if (scene.visualType === 'text') {
+      textFallbackTotal += 1;
+      textFallbackStreak += 1;
+      if (textFallbackStreak > 2) {
+        violations.push({
+          level: 'error',
+          code: 'TEXT_FALLBACK_STREAK',
+          sceneIndex,
+          message: 'More than two fallback text cards appear back-to-back. Use b-roll or a finance graphic.',
+        });
+      }
+    } else {
+      textFallbackStreak = 0;
+    }
 
     if (scene.visualType === 'chart' || scene.chartType) {
       const chartType = String(scene.chartType || '').trim();
@@ -103,6 +144,15 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
         message: `Chart type "${chartType}" appears ${count} times; limit is ${maxChartRepeats}.`,
       });
     }
+  }
+
+  const maxTextFallbacks = Math.max(4, Math.ceil(scenes.length * 0.25));
+  if (textFallbackTotal > maxTextFallbacks) {
+    violations.push({
+      level: 'error',
+      code: 'TEXT_FALLBACK_OVERUSED',
+      message: `Fallback text cards appear ${textFallbackTotal} times; limit is ${maxTextFallbacks}. Use matched b-roll or Remotion graphics.`,
+    });
   }
 
   for (const [query, count] of queryCounts.entries()) {

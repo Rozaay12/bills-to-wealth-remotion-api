@@ -1,10 +1,12 @@
 import { bundle } from '@remotion/bundler';
 import { getCompositions, renderMedia } from '@remotion/renderer';
 import express from 'express';
+import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
-import { chartPayloadSchema, chartTypeDescriptions, chartTypes } from './lib/chartTypes.js';
+import { chartPayloadSchema, chartTypeDescriptions, chartTypes, type ChartPayload } from './lib/chartTypes.js';
 import { validateVisualPlan } from './lib/planQa.js';
 import { planVideoVisuals, type BrollClip } from './lib/visualPlanner.js';
 
@@ -52,6 +54,125 @@ function driveDownloadUrl(url: string) {
   const fileId = url.match(/\/d\/([^/]+)/)?.[1] || url.match(/[?&]id=([^&]+)/)?.[1];
   if (!fileId) return url;
   return `https://drive.google.com/uc?id=${encodeURIComponent(fileId)}&export=download`;
+}
+
+const titleCase = (value = '') =>
+  value
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+
+function hasInternalVisibleLabel(value = '') {
+  const normalized = value.toLowerCase();
+  if (/\b(?:budget_pressure|generic_debt|generic_savings|generic_credit|generic_budget|visual_intent|broll_query|chart_payload)\b/.test(normalized)) {
+    return true;
+  }
+  if (/\b[a-z]+_[a-z0-9_]+\b/.test(value)) return true;
+  if (/\s+#\d+\b/.test(value)) return true;
+  return false;
+}
+
+function cleanVisibleText(value = '', fallback = '') {
+  const replacements: Record<string, string> = {
+    budget_pressure: 'monthly budget pressure',
+    generic_debt: 'debt pressure',
+    generic_savings: 'savings buffer',
+    generic_credit: 'credit pressure',
+    generic_budget: 'monthly budget',
+    visual_intent: '',
+    broll_query: '',
+    chart_payload: '',
+  };
+  let cleaned = String(value || '');
+  for (const [token, replacement] of Object.entries(replacements)) {
+    cleaned = cleaned.replace(new RegExp(`\\b${token}\\b`, 'gi'), replacement);
+  }
+  cleaned = cleaned
+    .replace(/\s+#\d+\b/g, '')
+    .replace(/\b([a-z]+(?:_[a-z0-9]+)+)\b/g, (_match, token: string) => titleCase(token))
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || fallback;
+}
+
+function firstSentence(value = '') {
+  return cleanVisibleText(value.split(/(?<=[.!?])\s+/)[0] || value).slice(0, 140);
+}
+
+function editorialChartTitle(chartType: string, voiceover = '') {
+  if (/\b(overdraft|declined|pending|low balance|bank app|debit)\b/i.test(voiceover)) {
+    if (chartType === 'fee_explosion') return 'When The Fee Hits';
+    if (chartType === 'before_after_cashflow') return 'The Buffer That Stops The Fee';
+    return 'Why The Balance Was Wrong';
+  }
+  if (/\b(refund|banks?|bureau|consumer)\b/i.test(voiceover)) return 'What Banks Had To Refund';
+  if (/\b(car|vehicle|dealer|loan)\b/i.test(voiceover)) return 'The Real Cost Of The Car';
+  if (/\b(grocery|checkout|receipt)\b/i.test(voiceover)) return 'The Checkout Trap';
+  if (chartType === 'fee_explosion') return 'Small Fees Become Real Money';
+  if (chartType === 'statement_breakdown') return 'The Statement Shows The Trap';
+  if (chartType === 'before_after_cashflow') return 'Before And After The Decision';
+  if (chartType === 'interest_trap_timeline') return 'The Cost Grows Over Time';
+  return 'The Real Monthly Cost';
+}
+
+function sanitizeChartPayload(payload: ChartPayload): ChartPayload {
+  const voiceoverBeat = firstSentence(payload.voiceoverBeat || payload.subtitle || payload.title);
+  const title = cleanVisibleText(payload.title);
+  const titleLooksInternal =
+    !title ||
+    hasInternalVisibleLabel(payload.title) ||
+    /\b(?:bill zoom in|savings buffer)\b.*#?\d*/i.test(payload.title);
+  const subtitle = cleanVisibleText(payload.subtitle || '');
+  const emphasis = cleanVisibleText(payload.emphasis || '');
+
+  return {
+    ...payload,
+    title: titleLooksInternal ? editorialChartTitle(payload.chartType, voiceoverBeat) : title.slice(0, 92),
+    subtitle: subtitle && !hasInternalVisibleLabel(payload.subtitle || '') ? subtitle.slice(0, 140) : undefined,
+    values: payload.values.map((item) => ({
+      ...item,
+      label: cleanVisibleText(item.label, 'Cost').slice(0, 44),
+      note: item.note ? cleanVisibleText(item.note).slice(0, 80) : undefined,
+    })),
+    voiceoverBeat,
+    emphasis: emphasis && !hasInternalVisibleLabel(payload.emphasis || '') ? emphasis.slice(0, 80) : undefined,
+  };
+}
+
+function runCommand(command: string, args: string[], timeoutMs = 90000) {
+  return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`${command} timed out`));
+    }, timeoutMs);
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
+function parseRanges(output: string, name: string) {
+  const regex = new RegExp(`${name}_start:([0-9.]+)\\s+${name}_end:([0-9.]+)\\s+${name}_duration:([0-9.]+)`, 'g');
+  return Array.from(output.matchAll(regex)).map((match) => ({
+    start: Number(match[1]),
+    end: Number(match[2]),
+    duration: Number(match[3]),
+  }));
 }
 
 function clipsFromPayload(body: Record<string, unknown>): BrollClip[] {
@@ -179,7 +300,7 @@ app.post('/render-chart', requireAuth, async (req, res) => {
     return;
   }
 
-  const payload = parsed.data;
+  const payload = sanitizeChartPayload(parsed.data);
   const fingerprint = crypto
     .createHash('sha1')
     .update(JSON.stringify({
@@ -228,6 +349,118 @@ app.post('/render-chart', requireAuth, async (req, res) => {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+});
+
+app.post('/qa-render', requireAuth, async (req, res) => {
+  const videoUrl = typeof req.body?.videoUrl === 'string' ? req.body.videoUrl : '';
+  if (!videoUrl) {
+    res.status(400).json({ ok: false, error: 'Missing videoUrl.' });
+    return;
+  }
+
+  const ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg';
+  const ffprobe = process.env.FFPROBE_PATH || 'ffprobe';
+  const tmpPath = path.join(os.tmpdir(), `btw-render-qa-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.mp4`);
+
+  try {
+    const response = await fetch(videoUrl);
+    if (!response.ok) throw new Error(`Failed to download video: ${response.status} ${response.statusText}`);
+    await fs.writeFile(tmpPath, Buffer.from(await response.arrayBuffer()));
+
+    const durationResult = await runCommand(ffprobe, [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'default=nokey=1:noprint_wrappers=1',
+      tmpPath,
+    ], 30000);
+    const duration = Number(durationResult.stdout.trim());
+
+    const blackResult = await runCommand(ffmpeg, [
+      '-hide_banner',
+      '-i',
+      tmpPath,
+      '-vf',
+      'blackdetect=d=0.4:pix_th=0.10',
+      '-an',
+      '-f',
+      'null',
+      '-',
+    ]);
+    const silenceResult = await runCommand(ffmpeg, [
+      '-hide_banner',
+      '-i',
+      tmpPath,
+      '-af',
+      'silencedetect=noise=-45dB:d=0.4',
+      '-f',
+      'null',
+      '-',
+    ]);
+    const freezeResult = await runCommand(ffmpeg, [
+      '-hide_banner',
+      '-i',
+      tmpPath,
+      '-vf',
+      'freezedetect=n=-60dB:d=5',
+      '-an',
+      '-f',
+      'null',
+      '-',
+    ]);
+
+    const blackRanges = parseRanges(blackResult.stderr, 'black');
+    const silenceRanges = parseRanges(silenceResult.stderr, 'silence');
+    const freezeRanges = parseRanges(freezeResult.stderr, 'freeze');
+    const violations: Array<{ level: 'error' | 'warning'; code: string; message: string; range?: unknown }> = [];
+
+    for (const range of blackRanges) {
+      const isTail = Number.isFinite(duration) && duration - range.end < 0.7;
+      if (isTail && range.duration > 1) {
+        violations.push({ level: 'error', code: 'BLACK_TAIL', message: `Black tail lasts ${range.duration.toFixed(2)}s.`, range });
+      } else if (range.duration > 0.75) {
+        violations.push({ level: 'error', code: 'BLACK_GAP', message: `Black screen gap lasts ${range.duration.toFixed(2)}s.`, range });
+      }
+    }
+
+    for (const range of silenceRanges) {
+      const isTail = Number.isFinite(duration) && duration - range.end < 0.7;
+      if (isTail && range.duration > 1.25) {
+        violations.push({ level: 'error', code: 'SILENT_TAIL', message: `Silent tail lasts ${range.duration.toFixed(2)}s.`, range });
+      } else if (range.duration > 1.5) {
+        violations.push({ level: 'warning', code: 'LONG_SILENCE', message: `Silence lasts ${range.duration.toFixed(2)}s.`, range });
+      }
+    }
+
+    for (const range of freezeRanges) {
+      const isTail = Number.isFinite(duration) && duration - range.end < 0.7;
+      if (!isTail && range.duration > 8) {
+        violations.push({ level: 'warning', code: 'LONG_FREEZE', message: `Static frame lasts ${range.duration.toFixed(2)}s.`, range });
+      }
+    }
+
+    const errors = violations.filter((item) => item.level === 'error').length;
+    res.status(errors ? 422 : 200).json({
+      ok: errors === 0,
+      duration,
+      blackRanges,
+      silenceRanges,
+      freezeRanges,
+      errors,
+      warnings: violations.length - errors,
+      violations,
+    });
+  } catch (error) {
+    res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      hint: 'Set FFMPEG_PATH and FFPROBE_PATH in Render if the service cannot find ffmpeg.',
+    });
+  } finally {
+    await fs.unlink(tmpPath).catch(() => undefined);
   }
 });
 
