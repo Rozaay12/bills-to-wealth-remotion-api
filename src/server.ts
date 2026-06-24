@@ -18,7 +18,23 @@ const apiToken = process.env.API_TOKEN || '';
 const remotionEntryPoint = path.join(process.cwd(), 'src/remotion/index.ts');
 
 app.set('trust proxy', true);
-app.use(express.json({ limit: '12mb' }));
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '50mb' }));
+app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (!error) {
+    next();
+    return;
+  }
+  const err = error as { type?: string; status?: number; message?: string };
+  if (err.type === 'entity.too.large' || err.status === 413 || err.type === 'entity.parse.failed') {
+    res.status(err.status || 400).json({
+      ok: false,
+      error: err.type === 'entity.too.large' ? 'Request body is too large.' : 'Invalid JSON request body.',
+      detail: err.message || String(error),
+    });
+    return;
+  }
+  next(error);
+});
 
 let bundlePromise: Promise<string> | null = null;
 let renderQueue = Promise.resolve();
