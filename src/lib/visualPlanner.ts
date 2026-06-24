@@ -43,6 +43,7 @@ export type VideoPlanSceneInput = {
   duration?: number;
   approvedStats?: unknown[];
   visualIntent?: string;
+  candidates?: BrollClip[];
 };
 
 export type VideoPlanOptions = {
@@ -598,6 +599,10 @@ export function planVideoVisuals(
   const chartIndexes = chooseChartSceneIndexes(scenes, targetChartCount);
   const usedFingerprints = new Set<string>();
   const planned: PlannedVisualScene[] = [];
+  const sceneCandidateCount = scenes.reduce(
+    (total, scene) => total + (Array.isArray(scene.candidates) ? scene.candidates.length : 0),
+    0,
+  );
   let previousChartType: ChartType | undefined;
 
   scenes.forEach((scene, index) => {
@@ -633,7 +638,10 @@ export function planVideoVisuals(
     }
 
     previousChartType = undefined;
-    const selectedClip = selectBrollClip(clips, intent, usedFingerprints, minBrollScore);
+    const sceneClips = Array.isArray(normalizedScene.candidates) && normalizedScene.candidates.length
+      ? normalizedScene.candidates
+      : clips;
+    const selectedClip = selectBrollClip(sceneClips, intent, usedFingerprints, minBrollScore);
     if (!selectedClip) {
       planned.push(makeTextFallback(normalizedScene, intent, usedFingerprints));
       return;
@@ -683,7 +691,7 @@ export function planVideoVisuals(
       chartCount,
       fallbackCount,
       targetChartCount,
-      clipsAvailable: clips.length,
+      clipsAvailable: clips.length || sceneCandidateCount,
       qaScore: qa.score,
     },
     scenes: planned,
