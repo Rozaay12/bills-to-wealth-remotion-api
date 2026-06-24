@@ -702,12 +702,55 @@ function conciseBeat(scene: VideoPlanSceneInput) {
 function humanVisualIntent(scene: VideoPlanSceneInput, intent: SceneIntent) {
   const text = safeText(scene);
   if (/\b(sign|signed|signing|paperwork|contract|documents?)\b/i.test(text)) return 'Paperwork, signatures, and the hidden cost in the document.';
-  if (isMedicalBeat(text)) return 'Medical bill, itemized charges, and the call before paying.';
+  if (isMedicalBeat(text)) return medicalVisualIntent(text, scene);
   if (isBankingOverdraftBeat(text)) return 'Bank balance, pending charge, and the fee timing.';
   if (isGroceryBeat(text)) return 'Receipt, shelf price, and unit price detail.';
   if (isCarBeat(text)) return 'Car payment, financing paperwork, or transportation cost.';
   if (/\bsave|buffer|emergency\b/i.test(text)) return 'Savings buffer and the relief after the money move.';
-  return 'The money move and its real cost.';
+  return genericVisualIntent(text, scene);
+}
+
+function medicalVisualIntent(text: string, scene: VideoPlanSceneInput) {
+  if (/\b(surgical tray|supply|supplies|saline|anesthetic|suture|bandage|line items?)\b/i.test(text)) {
+    return 'Medical supply charges separated from the real treatment cost.';
+  }
+  if (/\b(itemized|cpt|billing code|billing codes|code stacking|coded|coding)\b/i.test(text)) {
+    return 'Itemized medical bill with CPT codes and inflated charge lines.';
+  }
+  if (/\b(charity care|financial assistance|adjustment|settlement|qualify)\b/i.test(text)) {
+    return 'Hospital assistance form and adjustment request before paying.';
+  }
+  if (/\b(call|phone|rep|department|log|notes?|documentation)\b/i.test(text)) {
+    return 'Billing department call notes, rep name, and next action.';
+  }
+  if (/\b(envelope|mailbox|kitchen table|stomach drops|bill out)\b/i.test(text)) {
+    return 'Medical invoice opened at the table with the total circled.';
+  }
+  if (/\b(stitches|er|emergency room|doctor|nurse|chair|90 minutes)\b/i.test(text)) {
+    return 'Simple ER visit compared with the oversized hospital bill.';
+  }
+  if (/\b(federal reserve|59%|unexpected expense|ambush)\b/i.test(text)) {
+    return 'Unexpected medical expense statistic and household savings risk.';
+  }
+  return genericVisualIntent(text, scene, 'The bill is not final just because it arrived.');
+}
+
+function genericVisualIntent(text: string, scene: VideoPlanSceneInput, fallback?: string) {
+  const beat = conciseBeat(scene).replace(/[.!?]+$/, '');
+  if (beat.length >= 22 && beat.length <= 86 && !/\b(the money move and its real cost)\b/i.test(beat)) return beat;
+  if (/\bbill|invoice|charge|fee|payment\b/i.test(text)) return 'The line item that changes the real amount owed.';
+  if (/\bcall|ask|request|say exactly|script\b/i.test(text)) return 'The exact phone script before money leaves the account.';
+  if (/\bproof|document|record|folder|notes?\b/i.test(text)) return 'The paper trail that gives the viewer leverage.';
+  const generic = [
+    'The decision point before paying the bill.',
+    'The hidden cost inside the ordinary-looking charge.',
+    'The small line item that changes the total.',
+    'The moment to pause before the money leaves.',
+    'The document trail behind the real cost.',
+    'The next move before the bill becomes final.',
+  ];
+  const idx = Math.max(0, Number(scene.sceneIndex || 1) - 1) % generic.length;
+  return fallback || generic[idx];
 }
 
 function hasNumbers(text: string) {
@@ -722,7 +765,7 @@ function isGroceryBeat(text: string) {
 }
 
 function isMedicalBeat(text: string) {
-  return /\b(er|emergency room|hospital|medical|doctor|copay|healthcare|pharmacy|chargemaster|itemized|trauma activation|eob|patient|clinic)\b/i.test(text) ||
+  return /\b(er|emergency room|hospital|medical|doctor|copay|healthcare|pharmacy|chargemaster|itemized|trauma activation|eob|patient|clinic|surgical tray|supply charge|supply charges|saline|anesthetic|suture|bandage|medical invoice)\b/i.test(text) ||
     (/\binsurance\b/i.test(text) && /\b(card|copay|bill|invoice|doctor|hospital|medical|healthcare|eob|patient|clinic)\b/i.test(text));
 }
 

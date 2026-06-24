@@ -60,6 +60,7 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
   const fingerprints = new Map<string, number[]>();
   const chartCounts = new Map<string, number>();
   const queryCounts = new Map<string, number>();
+  const visibleTextCounts = new Map<string, number[]>();
   let previousChartType = '';
   let chartTotal = 0;
   let plainTextFallbackTotal = 0;
@@ -87,6 +88,12 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
         sceneIndex,
         message: `Scene contains backend/internal visible text: "${visibleFields.slice(0, 120)}".`,
       });
+    }
+    const visibleTextKey = normalize([scene.title, scene.visualIntent, scene.visibleText].filter(Boolean).join(' '));
+    if (visibleTextKey && !/\b(?:subscribe|comment tracker|worksheet|download)\b/i.test(visibleFields)) {
+      const list = visibleTextCounts.get(visibleTextKey) || [];
+      list.push(sceneIndex);
+      visibleTextCounts.set(visibleTextKey, list);
     }
 
     if (scene.visualType === 'text') {
@@ -192,6 +199,17 @@ export function validateVisualPlan(scenes: VisualPlanScene[]) {
         level: 'warning',
         code: 'QUERY_OVERUSED',
         message: `Visual query "${query}" appears ${count} times. Use more specific scene queries.`,
+      });
+    }
+  }
+
+  for (const [visibleText, sceneIndexes] of visibleTextCounts.entries()) {
+    if (sceneIndexes.length > 2) {
+      violations.push({
+        level: 'error',
+        code: 'REPEATED_VISIBLE_FALLBACK_TEXT',
+        sceneIndex: sceneIndexes[2],
+        message: `Visible fallback/card wording repeats in scenes ${sceneIndexes.join(', ')}: "${visibleText}".`,
       });
     }
   }
