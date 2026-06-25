@@ -52,6 +52,7 @@ export type VideoPlanOptions = {
   minBrollScore?: number;
   minRescueBrollScore?: number;
   maxClipRepeats?: number;
+  allowExternalBrollFallback?: boolean;
 };
 
 export type PlannedVisualScene = {
@@ -1547,7 +1548,35 @@ export function planVideoVisuals(
       subtitle: scene.chartPayload?.subtitle || scene.fallbackKicker,
       visibleText: scene.fallbackText || scene.chartPayload?.voiceoverBeat,
     }));
-  const qa = validateVisualPlan(qaInput);
+  const allowExternalBrollFallback = options.allowExternalBrollFallback !== false;
+  const rawQa = validateVisualPlan(qaInput);
+  const externalFallbackRecoverableCodes = new Set([
+    'TEXT_FALLBACK_STREAK',
+    'TEXT_FALLBACK_OVERUSED',
+    'TEXT_FALLBACK_HEAVY',
+    'REPEATED_VISIBLE_FALLBACK_TEXT',
+  ]);
+  const qaViolations = allowExternalBrollFallback
+    ? rawQa.violations.map((violation) => (
+        externalFallbackRecoverableCodes.has(violation.code)
+          ? {
+              ...violation,
+              level: 'warning' as const,
+              message: `${violation.message} Downstream Pexels/Pixabay fallback is allowed to repair this before final render QA.`,
+            }
+          : violation
+      ))
+    : rawQa.violations;
+  const qaErrors = qaViolations.filter((item) => item.level === 'error').length;
+  const qaWarnings = qaViolations.filter((item) => item.level === 'warning').length;
+  const qa = {
+    ...rawQa,
+    ok: qaErrors === 0,
+    errors: qaErrors,
+    warnings: qaWarnings,
+    violations: qaViolations,
+    score: Math.max(0, 100 - qaErrors * 25 - qaWarnings * 7),
+  };
   const brollCount = planned.filter((scene) => scene.visualType === 'broll').length;
   const chartCount = planned.filter((scene) => scene.visualType === 'chart').length;
   const fallbackCount = planned.filter((scene) => scene.visualType === 'text').length;
@@ -1558,19 +1587,27 @@ export function planVideoVisuals(
   const coverageViolations = brollCount < minimumBrollCoverage
     ? [
         {
-          level: 'error' as const,
+          level: allowExternalBrollFallback ? 'warning' as const : 'error' as const,
           code: 'BROLL_COVERAGE_LOW',
-          message: `Only ${brollCount} b-roll scenes selected; minimum is ${minimumBrollCoverage}. Loosen visual matching or add more source clips before rendering.`,
+          message: allowExternalBrollFallback
+            ? `Only ${brollCount} Drive b-roll scenes selected before external fallback; target is ${minimumBrollCoverage}. Continue so Pexels/Pixabay can fill missing scenes before final render QA.`
+            : `Only ${brollCount} b-roll scenes selected; minimum is ${minimumBrollCoverage}. Loosen visual matching or add more source clips before rendering.`,
         },
       ]
     : [];
   const qaReport = coverageViolations.length
     ? {
         ...qa,
-        ok: false,
-        errors: qa.errors + coverageViolations.length,
+        ok: qa.errors === 0 && coverageViolations.every((item) => item.level !== 'error'),
+        errors: qa.errors + coverageViolations.filter((item) => item.level === 'error').length,
+        warnings: qa.warnings + coverageViolations.filter((item) => item.level === 'warning').length,
         violations: [...qa.violations, ...coverageViolations],
-        score: Math.max(0, qa.score - coverageViolations.length * 25),
+        score: Math.max(
+          0,
+          qa.score
+            - coverageViolations.filter((item) => item.level === 'error').length * 25
+            - coverageViolations.filter((item) => item.level === 'warning').length * 7,
+        ),
       }
     : qa;
 
@@ -1586,6 +1623,7 @@ export function planVideoVisuals(
       clipsAvailable,
       minimumBrollCoverage,
       qaScore: qaReport.score,
+      externalBrollFallbackAllowed: allowExternalBrollFallback,
     },
     scenes: planned,
     qaReport,
