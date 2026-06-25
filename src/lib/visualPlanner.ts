@@ -203,6 +203,14 @@ const intentProfiles: IntentProfile[] = [
     chartTypes: ['payment_stack', 'debt_waterfall'],
   },
   {
+    label: 'buy now pay later checkout trap',
+    categories: ['17_subscriptions_apps', '18_budgeting_bank_app', '01_debt_credit_cards', '04_budgeting'],
+    keywords: ['bnpl', 'buy now pay later', 'pay in four', 'installment', 'installments', 'checkout', 'cart', 'online order', 'online shopping', 'debit card', 'folder', 'phone', 'app', 'purchase', 'total'],
+    desiredTerms: ['online checkout', 'shopping cart', 'phone checkout', 'debit card', 'installment payment', 'buy now pay later', 'purchase total', 'receipt', 'order confirmation', 'budget folder'],
+    forbiddenTerms: ['repair', 'mechanic', 'tire', 'wheel', 'hood', 'jack', 'oil', 'garage', 'tools', 'hospital', 'doctor', 'pharmacy', 'grocery aisle', 'cereal'],
+    chartTypes: ['before_after_cashflow', 'payment_stack', 'statement_breakdown'],
+  },
+  {
     label: 'housing rent mortgage',
     categories: ['12_housing_mortgage', '04_budgeting', '05_stress_worry'],
     keywords: ['rent', 'mortgage', 'landlord', 'house', 'home', 'apartment', 'housing'],
@@ -464,6 +472,16 @@ function visualRequirementGroups(sceneText: string, intent: SceneIntent): Visual
     };
   }
 
+  if (isBnplBeat(sceneText)) {
+    return {
+      action: ['shop', 'checkout', 'tap', 'review', 'save', 'compare', 'pay'],
+      object: ['online checkout', 'shopping cart', 'phone', 'app', 'debit card', 'installment payment', 'purchase total', 'receipt', 'order confirmation', 'folder'],
+      location: ['phone screen', 'laptop', 'desk', 'checkout', 'home', 'store'],
+      strict: false,
+      reason: 'BNPL/checkout beat requires online cart, phone, receipt, or installment visuals',
+    };
+  }
+
   if (isBankingOverdraftBeat(sceneText)) {
     return {
       action: ['check', 'tap', 'decline', 'pay', 'transfer', 'deposit'],
@@ -553,14 +571,17 @@ export function inferSceneIntent(scene: VideoPlanSceneInput): SceneIntent {
     /\b(car|auto|vehicle|dealership|loan|keys)\b/i.test(text);
 
   const medicalProfile = intentProfiles.find((profile) => profile.label === 'healthcare and medical bills') || winner;
+  const bnplProfile = intentProfiles.find((profile) => profile.label === 'buy now pay later checkout trap') || winner;
   const bankingProfile = intentProfiles.find((profile) => profile.label === 'overdraft fee and debit card decline') || winner;
   const profile = isPaperwork
     ? intentProfiles[2]
-    : isMedicalBeat(text)
-      ? medicalProfile
-      : isBankingOverdraftBeat(text)
-        ? bankingProfile
-        : winner;
+    : isBnplBeat(text)
+      ? bnplProfile
+      : isMedicalBeat(text)
+        ? medicalProfile
+        : isBankingOverdraftBeat(text)
+          ? bankingProfile
+          : winner;
   const highSignalTokens = unique(tokens.filter((token) => token.length > 3)).slice(0, 10);
   const desiredTerms = unique([...profile.desiredTerms, ...highSignalTokens.slice(0, 6)]);
   const forbiddenTerms = unique(profile.forbiddenTerms || []);
@@ -572,7 +593,7 @@ export function inferSceneIntent(scene: VideoPlanSceneInput): SceneIntent {
     categories: profile.categories,
     desiredTerms,
     forbiddenTerms,
-    avoidGenericScreen: !/\b(app|screen|website|dashboard|online banking)\b/i.test(text),
+    avoidGenericScreen: !profile.label.includes('buy now pay later') && !/\b(app|screen|website|dashboard|online banking|online checkout|checkout page|shopping cart|order confirmation)\b/i.test(text),
     chartTypes: profile.chartTypes,
     highSignalTokens,
   };
@@ -702,12 +723,32 @@ function conciseBeat(scene: VideoPlanSceneInput) {
 function humanVisualIntent(scene: VideoPlanSceneInput, intent: SceneIntent) {
   const text = safeText(scene);
   if (/\b(sign|signed|signing|paperwork|contract|documents?)\b/i.test(text)) return 'Paperwork, signatures, and the hidden cost in the document.';
+  if (isBnplBeat(text)) return bnplVisualIntent(text, scene);
   if (isMedicalBeat(text)) return medicalVisualIntent(text, scene);
   if (isBankingOverdraftBeat(text)) return bankingVisualIntent(text, scene);
   if (isGroceryBeat(text)) return groceryVisualIntent(text, scene);
   if (isCarBeat(text)) return 'Car payment, financing paperwork, or transportation cost.';
   if (/\bsave|buffer|emergency\b/i.test(text)) return 'Savings buffer and the relief after the money move.';
   return genericVisualIntent(text, scene);
+}
+
+function bnplVisualIntent(text: string, scene: VideoPlanSceneInput) {
+  if (/\b(full price|purchase total|187|total)\b/i.test(text)) {
+    return 'Online checkout showing the real total before the installment split.';
+  }
+  if (/\b(46|installment|installments|pay in four|pay-in-four|pay later)\b/i.test(text)) {
+    return 'Phone checkout showing the installment amount beside the real purchase total.';
+  }
+  if (/\b(unplanned cart|cart over|saved to a folder|folder on your phone|folder rule)\b/i.test(text)) {
+    return 'Phone folder or saved cart rule before the unplanned purchase clears.';
+  }
+  if (/\b(debit card|no installments|pay cash|cash rule)\b/i.test(text)) {
+    return 'Debit-card checkout choice that blocks the payment-plan trap.';
+  }
+  if (/\b(receipt|order confirmation|extra spent|97)\b/i.test(text)) {
+    return 'Order receipt showing the extra spend created by the smaller checkout number.';
+  }
+  return genericVisualIntent(text, scene, 'Online cart, phone checkout, and the real purchase total.');
 }
 
 function medicalVisualIntent(text: string, scene: VideoPlanSceneInput) {
@@ -798,7 +839,22 @@ function hasNumbers(text: string) {
   return /(\$|\b\d+%|\bapr\b|\binterest\b|\bfee\b|\bpayment\b|\bmonthly\b|\bbalance\b)/i.test(text);
 }
 
+function isBnplBeat(text: string) {
+  const dollarValues = extractDollarValues(text);
+  const hasInstallmentPair =
+    dollarValues.length >= 2 &&
+    Math.max(...dollarValues) >= 100 &&
+    Math.min(...dollarValues) <= 100 &&
+    /\b(buy|purchase|checkout|price|number|brain needs to see|before you buy)\b/i.test(text);
+  return /\b(bnpl|buy now pay later|buy-now-pay-later|pay in four|pay-in-four|pay in 4|pay-in-4|four-payment|payment plan|installment|installments|split payment|split payments|afterpay|klarna|affirm|sezzle|online checkout|checkout page|order confirmation|shopping cart|cart over|cart total|unplanned cart|full price|purchase total|folder on your phone|saved to a folder|debit card at checkout|extra spent|first number felt harmless|small checkout number|smaller checkout number)\b/i.test(text) ||
+    (/\b(cart|checkout|purchase|order|shop|shopping|debit card|phone|app|folder|receipt|first number|small number|smaller number)\b/i.test(text) && /\b(installment|installments|pay later|pay-in-four|pay in four|payment plan|full price|total|unplanned|saved|folder|debit|checkout|harmless|extra spent)\b/i.test(text)) ||
+    hasInstallmentPair;
+}
+
 function isGroceryBeat(text: string) {
+  if (isBnplBeat(text) && !/\b(grocery|groceries|supermarket|unit price|per ounce|ounces?|shrinkflation|store brand|cereal|bakery|produce|store aisle|food price)\b/i.test(text)) {
+    return false;
+  }
   if (isBankingOverdraftBeat(text) && !/\b(grocery|groceries|supermarket|unit price|per ounce|ounces?|shrinkflation|store brand|cereal|bakery|produce|store aisle)\b/i.test(text)) {
     return false;
   }
@@ -811,6 +867,9 @@ function isMedicalBeat(text: string) {
 }
 
 function isBankingOverdraftBeat(text: string) {
+  if (isBnplBeat(text) && !/\b(overdraft|declined|pending charge|low balance|bank balance|checking balance|payment queue|posted|settled|fee cycle)\b/i.test(text)) {
+    return false;
+  }
   return /\b(overdraft|debit|declined|pending|bank app|checking account|checking balance|low balance|bank balance|bank says|owe them|payment queue|transaction|transactions|reordered|largest to smallest|posted|settled|electric bill|subscription app charge|real balance|tracker|mental zero|fee cycle)\b/i.test(text);
 }
 
@@ -826,7 +885,7 @@ function isChartWorthyText(text: string) {
   const hasExplicitMetric =
     /(\$|\b\d+(?:\.\d+)?\s?%|\b\d+\s?(?:dollars?|bucks?|months?|years?|weeks?|ounces?|oz|per|lower|higher|less|more)\b)/i.test(text) ||
     new RegExp(`\\b${numberWord}\\s+(?:dollars?|bucks?|percent|months?|years?|weeks?|ounces?|items?|products?)\\b`, 'i').test(text);
-  const hasFinanceMechanic = /\b(apr|interest|fee|payment|monthly|balance|statement|rent|mortgage|insurance|save|savings|refund|cost|price|unit price|per ounce|shrinkflation|inflation|budget|debt|cashflow|buffer)\b/i.test(text);
+  const hasFinanceMechanic = /\b(apr|interest|fee|payment|monthly|balance|statement|rent|mortgage|insurance|save|savings|refund|cost|price|unit price|per ounce|shrinkflation|inflation|budget|debt|cashflow|buffer|installment|installments|pay later|pay-in-four|pay in four|checkout|purchase total|cart total)\b/i.test(text);
   return hasExplicitMetric && hasFinanceMechanic;
 }
 
@@ -838,6 +897,7 @@ function chooseChartType(
 ): ChartType {
   const text = safeText(scene);
   const preferred = [...intent.chartTypes];
+  if (isBnplBeat(text)) preferred.unshift('before_after_cashflow', 'payment_stack', 'statement_breakdown');
   if (isMedicalBeat(text)) preferred.unshift('statement_breakdown', 'fee_explosion');
   if (isBankingOverdraftBeat(text)) preferred.unshift('fee_explosion', 'before_after_cashflow', 'statement_breakdown');
   if (/\b(apr|interest|compound|years?|months?)\b/i.test(text)) preferred.unshift('interest_trap_timeline');
@@ -940,6 +1000,31 @@ function chartValuesFor(scene: VideoPlanSceneInput, chartType: ChartType) {
       { label: 'Copay', amount: copay },
       { label: 'Surprise invoice', amount: surpriseBill },
       { label: 'Skipped care', amount: Number.isFinite(percent) ? percent : 26 },
+    ];
+  }
+  if (isBnplBeat(text)) {
+    const dollarValues = extractDollarValues(text);
+    const total = dollarValues.find((value) => value >= 100) || values.find((value) => value >= 100) || 187;
+    const installment = dollarValues.find((value) => value > 0 && value < total && value <= 100) || values.find((value) => value > 0 && value < total && value <= 100) || Math.max(1, Math.round(total / 4));
+    const extraSpend = dollarValues.find((value) => value > installment && value < total) || values.find((value) => value > installment && value < total) || Math.max(0, total - installment);
+    if (chartType === 'before_after_cashflow') {
+      return [
+        { label: 'Installment shown', amount: installment },
+        { label: 'Full purchase', amount: total },
+        { label: 'Budget hit', amount: Math.max(total, installment + extraSpend) },
+      ];
+    }
+    if (chartType === 'payment_stack') {
+      return [
+        { label: 'Checkout today', amount: installment },
+        { label: 'Remaining plan', amount: Math.max(0, total - installment) },
+        { label: 'Extra spend', amount: extraSpend },
+      ];
+    }
+    return [
+      { label: 'Checkout price', amount: installment },
+      { label: 'Real total', amount: total },
+      { label: 'Extra spend', amount: extraSpend },
     ];
   }
   if (isGroceryBeat(text)) {
@@ -1049,6 +1134,12 @@ function shortTitle(scene: VideoPlanSceneInput, chartType: ChartType) {
     if (/\b(eob|insurance)\b/i.test(text)) return 'What Insurance Says Vs What They Billed';
     return 'The Medical Bill Breakdown';
   }
+  if (isBnplBeat(text)) {
+    if (/\b(full price|purchase total|187|total)\b/i.test(text)) return 'The Full Price Hiding At Checkout';
+    if (/\b(installment|installments|pay in four|pay-in-four|46)\b/i.test(text)) return 'The Installment Price Trap';
+    if (/\b(extra spent|97|unplanned)\b/i.test(text)) return 'The Extra Spend BNPL Creates';
+    return 'The Checkout Price Trap';
+  }
   if (isGroceryBeat(text)) {
     if (/\b(unit price|per ounce|ounces?|oz)\b/i.test(text)) return 'The Unit Price Trap';
     if (/\b(shrinkflation|package|smaller|less)\b/i.test(text)) return 'Shrinkflation Hides Here';
@@ -1089,7 +1180,7 @@ function chooseChartSceneIndexes(scenes: VideoPlanSceneInput[], targetChartCount
       const text = safeText(scene);
       if (!isChartWorthyText(text)) return { scene, index, score: 0 };
       let score = hasNumbers(text) ? 8 : 4;
-      if (/\b(apr|interest|fee|payment|monthly|balance|statement|rent|mortgage|insurance|gas|save|savings|unit price|per ounce|shrinkflation|inflation|checkout|receipt)\b/i.test(text)) score += 7;
+      if (/\b(apr|interest|fee|payment|monthly|balance|statement|rent|mortgage|insurance|gas|save|savings|unit price|per ounce|shrinkflation|inflation|checkout|receipt|installment|installments|pay later|pay-in-four|pay in four|purchase total|cart total)\b/i.test(text)) score += 7;
       if (/\b(here is|watch|number|cost|trap|real|hidden|compare|lower|higher|less|more)\b/i.test(text)) score += 3;
       return { scene, index, score };
     })
@@ -1229,6 +1320,7 @@ function rebalanceFallbacksWithCharts(planned: PlannedVisualScene[], scenes: Vid
 
 function kickerFor(text: string) {
   if (/\b(er|hospital|medical|chargemaster|itemized|insurance|eob|copay|doctor|pharmacy)\b/i.test(text)) return 'Hospital Bill';
+  if (isBnplBeat(text)) return 'Checkout';
   if (/\b(sign|signed|signing|paperwork|contract|documents?|loan officer|finance manager)\b/i.test(text)) return 'Paperwork';
   if (isGroceryBeat(text)) return 'Receipt Check';
   if (/\boverdraft|fee|penalty|declined\b/i.test(text)) return 'Real Cost';
@@ -1240,6 +1332,7 @@ function kickerFor(text: string) {
 function fallbackStyleFor(scene: VideoPlanSceneInput, intent: SceneIntent): PlannedVisualScene['fallbackStyle'] {
   const text = safeText(scene);
   if (/\b(meet|dana|marcus|david|lisa|nurse|teacher|driver|single mom|single dad)\b/i.test(text)) return 'character_card';
+  if (isBnplBeat(text)) return /\b(receipt|order confirmation|paper trail|folder|total)\b/i.test(text) ? 'document_audit' : 'bank_app_mockup';
   if (isBankingOverdraftBeat(text)) return 'bank_app_mockup';
   if (/\b(statement|bill|invoice|paperwork|contract|documents?|ledger|tracker|log it|circle every fee)\b/i.test(text)) return 'document_audit';
   if (/\b(first|second|third|three moves|strategy|checklist|steps?)\b/i.test(text)) return 'checklist';
@@ -1262,6 +1355,7 @@ function subtitleForScene(scene: VideoPlanSceneInput, intent: SceneIntent) {
   if (/\b(itemized|billing department|call)\b/i.test(text)) return 'Use the bill against itself.';
   if (/\b(eob|insurer)\b/i.test(text) || (/\binsurance\b/i.test(text) && /\b(hospital|medical|doctor|copay|healthcare|bill)\b/i.test(text))) return 'Compare what they billed to what insurance says.';
   if (/\b(sign|signed|signing|paperwork|contract)\b/i.test(text)) return 'The details are in the document.';
+  if (isBnplBeat(text)) return 'The small checkout number hides the full price.';
   if (isGroceryBeat(text)) return 'The receipt tells the truth.';
   if (isBankingOverdraftBeat(text)) return 'The fee starts before it posts.';
   if (/\bsave|buffer|emergency\b/i.test(text)) return 'The buffer changes the outcome.';
@@ -1284,6 +1378,11 @@ function fallbackTitleFor(scene: VideoPlanSceneInput, intent: SceneIntent) {
   if (/\b(itemized|billing department|call)\b/i.test(text)) return 'Call Billing Before You Pay';
   if (/\b(eob|insurer)\b/i.test(text) || (/\binsurance\b/i.test(text) && /\b(hospital|medical|doctor|copay|healthcare|bill)\b/i.test(text))) return 'Compare The Bill To The EOB';
   if (/\b(er|emergency room|medical bill|hospital bill|trauma activation)\b/i.test(text)) return 'The Bill Is An Opening Offer';
+  if (isBnplBeat(text) && /\b(full price|purchase total|187|total)\b/i.test(text)) return 'Look At The Full Price First';
+  if (isBnplBeat(text) && /\b(installment|installments|pay in four|pay-in-four|46)\b/i.test(text)) return 'The Installment Number Is The Bait';
+  if (isBnplBeat(text) && /\b(folder|saved|cart over|unplanned cart)\b/i.test(text)) return 'Save The Cart Before You Buy';
+  if (isBnplBeat(text) && /\b(no installments|debit card|pay cash)\b/i.test(text)) return 'Use The Debit Rule';
+  if (isBnplBeat(text)) return 'The Checkout Screen Is The Trap';
   if (isGroceryBeat(text) && /\b(unit price|per ounce|ounces?|oz)\b/i.test(text)) return 'Check The Unit Price';
   if (isGroceryBeat(text) && /\b(shrinkflation|package|smaller|less)\b/i.test(text)) return 'Shrinkflation Hides In The Package';
   if (isGroceryBeat(text) && /\b(tracker|worksheet|checklist|comment)\b/i.test(text)) return 'Use The Grocery Tracker';
@@ -1315,6 +1414,12 @@ function fallbackBodyFor(scene: VideoPlanSceneInput, intent: SceneIntent) {
     ) ||
     /\b(?:film|shoot|editor|b-roll|visual sequence|show the specific|hand tapping|scissors on the kitchen table)\b/i.test(cleaned);
   if (!looksLikeDirection && cleaned.length >= 12) return cleaned;
+  if (isBnplBeat(text)) {
+    if (/\b(full price|purchase total|total)\b/i.test(text)) return 'Check the full purchase price before the payment plan.';
+    if (/\b(folder|saved|cart over|unplanned cart)\b/i.test(text)) return 'Save the cart and wait before the unplanned buy clears.';
+    if (/\b(debit card|no installments|pay cash)\b/i.test(text)) return 'Use the debit-card rule when the total is not planned.';
+    return 'The installment looks small, but the full price still hits the budget.';
+  }
   if (isBankingOverdraftBeat(text)) {
     if (/\b(low balance|alert|toggle|notification)\b/i.test(text)) return 'Set a low-balance alert before the fee hits.';
     if (/\b(overdraft protection|turn it off|opt out)\b/i.test(text)) return 'Turn off the setting that lets fees stack.';
